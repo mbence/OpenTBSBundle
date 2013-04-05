@@ -24,6 +24,7 @@ What is special to OpenTBS:
 
 ## Versions included
 TinyButStrong - 3.8.1
+
 OpenTBS - 1.7.6
 
 ## Requirements
@@ -69,7 +70,7 @@ public function registerBundles()
 }
 ```
 
-#### Now you can get the 'opentbs' service with $this->container->get('opentbs') which will give you a standard clsTinyButStrong class with OpenTBS plugin enabled.
+#### Now you can use the 'opentbs' service.
 
 
 ## Using OpenTBSBundle
@@ -79,7 +80,7 @@ First you need to define the variables in your docx template (you can use any ot
 ... some text in a word file with a `[client.name]` variable ...
 
 ```
-In TBS you always need a variable base (`client`) and a variable name (`name`).
+In TBS you always need a variable base `client` and a variable name `name`.
 
 Then in your controller you need to get the OpenTBS service, load your template and merge the fields (eg. replace the teplate variables).
 ```php
@@ -93,8 +94,10 @@ Then in your controller you need to get the OpenTBS service, load your template 
     $TBS->Show(OPENTBS_DOWNLOAD, 'file_name.docx');
 ```
 A note for onshow automatic variables:
-You could define your variables within the `onshow` base, (like `onshow.name`), but I strongly discourage this practice for it will only work if you use GLOBAL variables.
+You could define your variables within the `onshow` base, (like `onshow.name`), but I would not recommend this practice for it will only work if you use GLOBAL variables.
 
 
 ### For more information ...
-read the TBS manual at http://www.tinybutstrong.com/manual.php and the OpenTBS plugin documentation at http://www.tinybutstrong.com/plugins/opentbs/tbs_plugin_opentbs.html
+read the TBS manual at http://www.tinybutstrong.com/manual.php
+
+and the OpenTBS plugin documentation at http://www.tinybutstrong.com/plugins/opentbs/tbs_plugin_opentbs.html
