@@ -2,7 +2,7 @@
     "name": "mbence/opentbs-bundle",
     "type": "symfony-bundle",
     "description": "OpenTBS Bundle for Symfony2 - create OpenOffice and Ms Office documents with Symfony",
-    "keywords": ["symfony","TBS","OpenTBS", "document", "docx", "OpenOffice", "MS Office"],
+    "keywords": ["symfony","TBS","OpenTBS", "document", "OpenOffice", "MS Office", "odt", "docx", "xlsx", "pptx"],
     "homepage": "https://github.com/mbence/OpenTBSBundle",
     "license": "MIT",
     "authors": [
