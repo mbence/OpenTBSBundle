@@ -25,7 +25,7 @@ What is special to OpenTBS:
 ## Versions included
 TinyButStrong - 3.9.0
 
-OpenTBS - 1.9.0
+OpenTBS - 1.9.4
 
 ## Requirements
 
