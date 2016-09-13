@@ -23,9 +23,9 @@ What is special to OpenTBS:
 * Works with both PHP 4 and PHP 5.
 
 ## Versions included
-TinyButStrong - 3.9.0
+TinyButStrong - 3.10.1
 
-OpenTBS - 1.9.4
+OpenTBS - 1.9.7
 
 ## Requirements
 
@@ -35,22 +35,12 @@ OpenTBS - 1.9.4
 
 ## Installation
 
+### Setp 0: [Install Composer](https://getcomposer.org/doc/00-intro.md#installation-linux-unix-osx)
+
 ### Step 1: Download the bundle using composer
 
-Add the following in your composer.json:
-
-```json
-{
-    "require": {
-        "mbence/opentbs-bundle": "dev-master"
-    }
-}
-```
-
-Then download / update by running the command:
-
 ``` bash
-$ php composer.phar update mbence/opentbs-bundle
+> composer require mbence/opentbs-bundle
 ```
 
 Composer will install the bundle to your project's `vendor/mbence/opentbs-bundle` directory.
