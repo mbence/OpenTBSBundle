@@ -75,7 +75,7 @@ In TBS you always need a variable base `client` and a variable name `name`.
 Then in your controller you need to get the OpenTBS service, load your template and merge the fields (eg. replace the teplate variables).
 ```php
     // get the service
-    $TBS = $this->container->get('opentbs');
+    $TBS = $this->get('opentbs');
     // load your template
     $TBS->LoadTemplate('template.docx');
     // replace variables
