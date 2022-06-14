@@ -1,5 +1,5 @@
 {
-    "name": "mbence/opentbs-bundle",
+    "name": "wakeasp-inc/opentbs-bundle",
     "type": "symfony-bundle",
     "description": "OpenTBS Bundle for Symfony - create OpenOffice and Ms Office documents with Symfony",
     "keywords": ["symfony","TBS","OpenTBS", "document", "OpenOffice", "MS Office", "odt", "docx", "xlsx", "pptx"],

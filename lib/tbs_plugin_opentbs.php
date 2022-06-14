@@ -7,8 +7,8 @@
  * This TBS plug-in can open a zip file, read the central directory,
  * and retrieve the content of a zipped file which is not compressed.
  *
- * @version 1.9.6
- * @date 2016-03-24
+ * @version 1.10.2
+ * @date 2020-11-19
  * @see     http://www.tinybutstrong.com/plugins.php
  * @author  Skrol29 http://www.tinybutstrong.com/onlyyou.html
  * @license LGPL-3.0
@@ -29,10 +29,15 @@ define('OPENTBS_RESET','clsOpenTBS.Reset');      // command to reset the changes
 define('OPENTBS_ADDFILE','clsOpenTBS.AddFile');    // command to add a new file in the archive
 define('OPENTBS_DELETEFILE','clsOpenTBS.DeleteFile'); // command to delete a file in the archive
 define('OPENTBS_REPLACEFILE','clsOpenTBS.ReplaceFile'); // command to replace a file in the archive
-define('OPENTBS_EDIT_ENTITY','clsOpenTBS.EditEntity'); // command to force an attribute
+define('OPENTBS_EDIT_ENTITY','clsOpenTBS.EditEntity');  // command to edit an attribute
+define('OPENTBS_READ_ENTITY','clsOpenTBS.ReadEntity');  // command to read an attribute
 define('OPENTBS_FILEEXISTS','clsOpenTBS.FileExists');
+define('OPENTBS_GET_FILES','clsOpenTBS.GetFiles');
+define('OPENTBS_GET_OPENED_FILES','clsOpenTBS.GetOpenedFiles');
+define('OPENTBS_WALK_OPENED_FILES','clsOpenTBS.WalkOpenedFiles');
 define('OPENTBS_CHART','clsOpenTBS.Chart');
 define('OPENTBS_CHART_INFO','clsOpenTBS.ChartInfo');
+define('OPENTBS_CHART_DELETE_CATEGORY','clsOpenTBS.ChartDeleteCategory');
 define('OPENTBS_DEFAULT','');   // Charset
 define('OPENTBS_ALREADY_XML',false);
 define('OPENTBS_ALREADY_UTF8','already_utf8');
@@ -59,6 +64,9 @@ define('OPENTBS_SELECT_FILE','clsOpenTBS.SelectFile');
 define('OPENTBS_ADD_CREDIT','clsOpenTBS.AddCredit');
 define('OPENTBS_SYSTEM_CREDIT','clsOpenTBS.SystemCredit');
 define('OPENTBS_RELATIVE_CELLS','clsOpenTBS.RelativeCells');
+define('OPENTBS_MAKE_OPTIMIZED_TEMPLATE','clsOpenTBS.MakeOptimizedTemplate');
+define('OPENTBS_GET_CELLS','clsOpenTBS.GetCells');
+define('OPENTBS_SET_CELLS','clsOpenTBS.SetCells');
 define('OPENTBS_FIRST',1); // 
 define('OPENTBS_GO',2);    // = TBS_GO
 define('OPENTBS_ALL',4);   // = TBS_ALL
@@ -85,13 +93,12 @@ class clsOpenTBS extends clsTbsZip {
 		if (!isset($TBS->OtbsSpacePreserve))        $TBS->OtbsSpacePreserve = true;
 		if (!isset($TBS->OtbsClearWriter))          $TBS->OtbsClearWriter = true;
 		if (!isset($TBS->OtbsClearMsWord))          $TBS->OtbsClearMsWord = true;
-		if (!isset($TBS->OtbsDeleteObsoleteChartData))    $TBS->OtbsDeleteObsoleteChartData = true;
 		if (!isset($TBS->OtbsMsExcelConsistent))    $TBS->OtbsMsExcelConsistent = true;
 		if (!isset($TBS->OtbsMsExcelExplicitRef))   $TBS->OtbsMsExcelExplicitRef = true;
 		if (!isset($TBS->OtbsClearMsPowerpoint))    $TBS->OtbsClearMsPowerpoint = true;
 		if (!isset($TBS->OtbsGarbageCollector))     $TBS->OtbsGarbageCollector = true;
 		if (!isset($TBS->OtbsMsExcelCompatibility)) $TBS->OtbsMsExcelCompatibility = true;
-		$this->Version = '1.9.6';
+		$this->Version = '1.10.2';
 		$this->DebugLst = false; // deactivate the debug mode
 		$this->ExtInfo = false;
 		$TBS->TbsZip = &$this; // a shortcut
@@ -270,6 +277,8 @@ class clsOpenTBS extends clsTbsZip {
 				$this->TbsPicPrepare($Txt, $Loc, true); // add parameter "att" which will be processed just after this event, when the field is cached
 			} elseif (in_array('mergecell', $ope_lst)) {
 				$this->TbsPrepareMergeCell($Txt, $Loc);
+			} elseif (in_array('docfield', $ope_lst)) {
+				$this->TbsDocFieldPrepare($Txt, $Loc);
 			}
 
 			// Change cell type
@@ -300,8 +309,10 @@ class clsOpenTBS extends clsTbsZip {
 			$this->TbsPicPrepare($Txt, $Loc, false);
 			$this->TbsPicAdd($Value, $PrmLst, $Txt, $Loc, 'ope=changepic');
 		} elseif ($ope==='delcol') {
-			$this->TbsDeleteColumns($Txt, $Value, $PrmLst, $PosBeg, $PosEnd);
-			return false; // prevent TBS from merging the field
+			// Delete the TBS field otherwise « return false » will produce a TBS error « doesn't have any subname » with [onload] fields.
+			$Txt = substr_replace($Txt, '', $PosBeg, $PosEnd - $PosBeg + 1);
+			$this->TbsDeleteColumns($Txt, $Value, $PrmLst, $PosBeg);
+			return false; // prevent TBS from actually merging the field
 		} elseif ($ope==='mergecell') {
 			if (isset($this->PrevVals[$Loc->FullName])) {
 				if ($Value==$this->PrevVals[$Loc->FullName]) {
@@ -311,6 +322,8 @@ class clsOpenTBS extends clsTbsZip {
 					$Value = '<w:vMerge w:val="restart"/>';
 				}
 			}
+		} elseif ($ope==='docfield') {
+			$this->TbsDocFieldPrepare($Txt, $Loc);
 		} else {
 			$x = substr($ope,0,4);
 			if( ($x==='tbs:') || ($x==='xlsx') || (substr($ope,0,3)==='ods') ) {
@@ -334,6 +347,44 @@ class clsOpenTBS extends clsTbsZip {
 			if (is_null($x1)) $x1 = true;
 			$this->TbsDebug_Info($x1);
 			return true;
+		}
+
+		if($Cmd==OPENTBS_MAKE_OPTIMIZED_TEMPLATE) {
+				
+			// save options
+			$s_onload = $this->TBS->GetOption('onload');
+			$s_onshow = $this->TBS->GetOption('onshow');
+			
+			// change options
+			$this->TBS->SetOption('onload', false);
+			$this->TBS->SetOption('onshow', false);
+			
+			// load the template
+			$this->TBS->LoadTemplate($x1);
+			
+			if ($this->ExtEquiv == 'xlsx') {
+				// load all sheets
+				$this->MsExcel_SheetInit();
+				foreach($this->MsExcel_Sheets as $o) {
+					$this->TbsLoadSubFileAsTemplate('xl/'.$o->file);
+				}
+			} elseif ($this->ExtEquiv == 'pptx') {
+				// load all slides
+				$this->MsPowerpoint_InitSlideLst();
+				foreach ($this->OpenXmlSlideLst as $s) {
+					$this->TbsLoadSubFileAsTemplate($s['file']);
+				}
+			}
+
+			// save the result
+			$this->TBS->Show(OPENTBS_FILE + OPENTBS_DEBUG_AVOIDAUTOFIELDS, $x2);
+			
+			// restore options
+			$this->TBS->SetOption('onload', $s_onload);
+			$this->TBS->SetOption('onshow', $s_onshow);
+			
+			return true;
+			
 		}
 		
 		// Check that a template is loaded
@@ -452,7 +503,8 @@ class clsOpenTBS extends clsTbsZip {
 
 			// Only XLSX files have sheets in separated subfiles.
 			if ($this->ExtEquiv==='xlsx') {
-				$o = $this->MsExcel_SheetGet($x1, $x2);
+				$SearchBy = ($x2) ? array('name', 'sheetId') : array('name', 'num');
+				$o = $this->MsExcel_SheetGetConf($x1, $SearchBy, true);
 				if ($o===false) return;
 				if ($o->file===false) return $this->RaiseError("($Cmd) Error with sheet '$x1'. The corresponding XML subfile is not referenced.");
 				return $this->TbsLoadSubFileAsTemplate('xl/'.$o->file);
@@ -473,14 +525,20 @@ class clsOpenTBS extends clsTbsZip {
 
 		} elseif ($Cmd==OPENTBS_SELECT_SLIDE) {
 
+			$master  = (is_null($x2)) ? false : $x2;
+
 			if ($this->ExtEquiv=='odp') {
-				$this->TbsLoadSubFileAsTemplate($this->ExtInfo['main']);
+				// ODP
+				// All slides are in the same sub-file
+				$file = ($master) ? 'styles.xml' : $this->ExtInfo['main'];
+				$this->TbsLoadSubFileAsTemplate($file);
 				return true;
 			}
 			
 			if ($this->ExtEquiv!='pptx') return false;
 
-			$master  = (is_null($x2)) ? false : $x2;
+			// PPTX
+
 			$slide = ($master) ? 'slide master' : 'slide';
 			$RefLst = $this->MsPowerpoint_InitSlideLst($master);
 
@@ -614,8 +672,12 @@ class clsOpenTBS extends clsTbsZip {
 				$x2 = intval($x2); // 0 by default
 				$file = $this->MsWord_GetHeaderFooterFile($Cmd, $x1, $x2);
 				break;
-			case 'odt': case 'ods': case 'odp':
-				$file = $this->ExtInfo['main'];
+			case 'odt':
+				$file = 'styles.xml';
+				break;
+			case 'ods': case 'odp':
+				$this->ExtInfo['main'];
+				break;
 			case 'xlsx': case 'pptx': 
 				return false;
 				break;
@@ -634,10 +696,14 @@ class clsOpenTBS extends clsTbsZip {
 					$res[] = $info['file'];
 				}				
 				break;
-			case 'odt': case 'ods': case 'odp':
+			case 'odt':
+				$res[] = 'styles.xml';
+				break;
+			case 'ods': case 'odp':
 				// Headers and footers are in the main file.
 				// Handout headers and footers for presentations (PPTX & ODP) are not supported for now.
 				if (isset($this->ExtInfo['main'])) $res[] = $this->ExtInfo['main'];
+				break;
 			case 'xlsx':
 				$FileName = $this->CdFileLst[$this->TbsCurrIdx];
 				if ($this->MsExcel_SheetIsIt($FileName) ) $res[] = $FileName;
@@ -680,8 +746,74 @@ class clsOpenTBS extends clsTbsZip {
 		} elseif ($Cmd==OPENTBS_EDIT_ENTITY) {
 			
 			$AddElIfMissing = (boolean) $x5;
-			return $this->XML_ForceAtt($x1, $x2, $x3, $x4, $AddElIfMissing);
+			return $this->XML_ReadWriteAtt($x1, $x2, $x3, $x4, $AddElIfMissing);
 			
+		} elseif ($Cmd==OPENTBS_READ_ENTITY) {
+			
+			return $this->XML_ReadWriteAtt($x1, $x2, $x3, null, false);
+
+		} elseif ($Cmd==OPENTBS_GET_FILES) {
+	
+			$files = array();
+			// All files in the archive
+			foreach ($this->CdFileLst as $f) {
+				$files[] = $f['v_name'];
+			}
+			return $files;
+			
+		} elseif ($Cmd==OPENTBS_CHART_DELETE_CATEGORY) {
+			
+			if (is_null($x3)) {
+				$x3 = false;
+			}
+			
+			if ($this->ExtType=='odf') {
+				return $this->OpenDoc_ChartDelCategories($x1, $x2, $x3);
+			} elseif ($this->ExtType=='openxml') {
+				return $this->OpenXML_ChartDelCategories($x1, $x2, $x3);
+			} else {
+				return false;
+			}
+			
+		} elseif ($Cmd==OPENTBS_GET_OPENED_FILES) {
+			
+			$files = array();
+			foreach ($this->TbsStoreLst as $idx => $info) {
+				// Files loaded manually, that are not the current selected file
+				if ($info['onshow'] && ($idx !== $this->TbsCurrIdx)) {
+					$name = $this->CdFileLst[$idx]['v_name'];
+					$files[] = $name;
+				}
+			}
+			// the current selected file
+			if ($this->TbsCurrIdx !== false) {
+				$name = $this->CdFileLst[$this->TbsCurrIdx]['v_name'];
+				$files[] = $name;
+			}
+			return $files;
+			
+		} elseif ($Cmd==OPENTBS_WALK_OPENED_FILES) {
+			
+			foreach ($this->TbsStoreLst as $idx => $info) {
+				// Files loaded manually, that are not the current selected file
+				if ($info['onshow'] && ($idx !== $this->TbsCurrIdx)) {
+					$name = $this->CdFileLst[$idx]['v_name'];
+					call_user_func_array($x1, array(&$this->TbsStoreLst[$idx]['src'], $name));
+				}
+			}
+			// the current selected file
+			if ($this->TbsCurrIdx !== false) {
+				$name = $this->CdFileLst[$this->TbsCurrIdx]['v_name'];
+				call_user_func_array($x1, array(&$this->TBS->Source, $name));
+			}
+			
+		} elseif ($Cmd == OPENTBS_GET_CELLS) {
+			
+			return $this->Sheet_VisitCells($x1, $x2, false);
+			
+		} elseif ($Cmd == OPENTBS_SET_CELLS) {
+			
+			return $this->RaiseError("Command OPENTBS_SET_CELLS will be available in a next version.");
 		}
 
 	}
@@ -706,14 +838,18 @@ class clsOpenTBS extends clsTbsZip {
 		$this->ExtEquiv = false;
 		$this->ExtType = false;
 		
+		// Common
 		$this->OtbsSheetSlidesDelete = array();
 		$this->OtbsSheetSlidesVisible = array();
+		$this->OtbsSheetRangeNames = false;
 
+		// LibreOffice
 		$this->OpenDocCharts = false;
 		$this->OpenDocManif = false;
 		$this->OpenDoc_SheetSlides = false;
 		$this->OpenDoc_Styles = false;
 
+		// MsOffice
 		$this->OpenXmlRid = false;
 		$this->OpenXmlCTypes = false;
 		$this->OpenXmlCharts = false;
@@ -723,6 +859,7 @@ class clsOpenTBS extends clsTbsZip {
 		$this->MsExcel_Sheets = false;
 		$this->MsExcel_NoTBS = array(); // shared string containing no TBS field
 		$this->MsExcel_KeepRelative = array();
+		$this->MsExcel_Formulas = array();
 		$this->MsWord_HeaderFooter = false;
 		$this->MsWord_DocPrId = 0;
 
@@ -774,7 +911,7 @@ class clsOpenTBS extends clsTbsZip {
 									$this->OpenDoc_CleanRsID($TBS->Source);
 								}
 								if (($e==='ods') && $TBS->OtbsMsExcelCompatibility) {
-									$this->OpenDoc_MsExcelCompatibility($TBS->Source);
+									$this->OpenDoc_DeleteUselessRepeatedElements($TBS->Source);
 								}
 								if ($e==='docx') {
 									if ($TBS->OtbsSpacePreserve) $this->MsWord_CleanSpacePreserve($TBS->Source);
@@ -784,7 +921,7 @@ class clsOpenTBS extends clsTbsZip {
 									$this->MsPowerpoint_Clean($TBS->Source);
 								}
 								if (($e==='xlsx') && $TBS->OtbsMsExcelConsistent) {
-									$this->MsExcel_DeleteFormulaResults($TBS->Source);
+									$this->MsExcel_DeleteFormulaResults($idx, $TBS->Source);
 									$this->MsExcel_ConvertToRelative($TBS->Source);
 								}
 							}
@@ -939,14 +1076,16 @@ class clsOpenTBS extends clsTbsZip {
 	}
 
 	/**
-	 * Tells if optimisation can be applied on the current content.
-	 * @param  boolean $mark true to mark the doc as done because optim will be processed.
-	 * @return boolean True if the current doc is just been marked done. Null if the mark cannot be read.
+	 * Tells if optimisation marker is prensent in the current source, eventually add it if it is not.
+	 * The optimization marker is a simple space (' ') before the closing chars of the "<? ?>" element.
+	 * @param  string  $Txt  The text source to check
+	 * @param  boolean $mark Set to true to mark the source as done if it is not the case.
+	 * @return boolean True if the current source has just been marked done. Null if it is not possible to telle if it is done or note. Fasle if is is done before.
 	 */
 	function TbsApplyOptim(&$Txt, $mark) {
 		if (substr($Txt, 0, 2) === '<?') {
 			$p = strpos($Txt, '?>');
-			if (substr($Txt, $p-1) === ' ') {
+			if (substr($Txt, $p-1, 1) === ' ') {
 				return false;
 			} else {
 				if ($mark) {
@@ -1016,8 +1155,13 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 
 	}
 
-	function TbsDebug_Merge($XmlFormat = true, $Current) {
-	// display modified and added files
+	/**
+	 * echo() info about modified and added files.
+	 *
+	 * @param boolean $XmlFormat  format XML contents
+	 * @param boolean $Current    true to start the debug with the current subtemplate, false to start when Show is called.
+	 */
+	function TbsDebug_Merge($XmlFormat, $Current) {
 
 		$this->TbsDebug_Init($nl, $sep, $bull, ($Current ? 'OPENTBS_DEBUG_XML_CURRENT' :'OPENTBS_DEBUG_XML_SHOW'));
 
@@ -1144,6 +1288,13 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 
 	}
 
+	/**
+	 * Raise an error message and return false.
+	 * @param {string}  $Msg      
+	 * @param {boolean} $NoErrMsg Add the TBS message about noerr option.
+	 *
+	 * @return {boolean} Always return false.
+	 */
 	function RaiseError($Msg, $NoErrMsg=false) {
 		// Overwrite the parent RaiseError() method.
 		$exit = (!$this->TBS->NoErr);
@@ -1159,7 +1310,22 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 		return false;
 	}
 
-	// Found the relevant attribute for the image source, and then add parameter 'att' to the TBS locator.
+	/**
+	 * Return the item of an array if exits, or the default value.
+	 */
+	function getItem($array, $item, $default) {
+		if (isset($array[$item])) {
+			return $array[$item];
+		} else {
+			return $default;
+		}
+	}
+	
+	/**
+	 * Prepare the TBS field for merging a picture: the TBS field is moved to the target attribute.
+	 * This is done only once when it is a block merging.
+	 * The actual image replacement is done with $this->TbsPicAdd()
+	 */
 	function TbsPicPrepare(&$Txt, &$Loc, $IsCaching) {
 
 		if (isset($Loc->PrmLst['pic_prepared'])) {
@@ -1185,9 +1351,19 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 		$att = false;
 		if ($this->ExtType==='odf') {
 			$att = 'draw:image#xlink:href';
+            $magnet = 'draw:frame';
 		} elseif ($this->ExtType==='openxml') {
-			$att = $this->OpenXML_FirstPicAtt($Txt, $Loc->PosBeg, $backward);
-			if ($att===false) return $this->RaiseError('Parameter ope=changepic used in the field ['.$Loc->FullName.'] has failed to found the picture.');
+			$type = $this->OpenXML_FirstPicType($Txt, $Loc->PosBeg, $backward);
+            if ($type == 'vml') {
+                // old way
+                $att = 'v:imagedata#r:id';
+                $magnet = 'w:pict';
+            } elseif ($type == 'dml') {
+                $att = 'a:blip#r:embed';
+                $magnet = 'w:drawing';
+            } else {
+                return $this->RaiseError('Parameter ope=changepic used in the field ['.$Loc->FullName.'] has failed to found the picture.');
+            }
 		} else {
 			return $this->RaiseError('Parameter ope=changepic used in the field ['.$Loc->FullName.'] is not supported with the current document type.');
 		}
@@ -1201,6 +1377,8 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 		// Delete parameter att to prevent TBS from another processing
 		unset($Loc->PrmLst['att']);
 	   
+        $Loc->PrmLst['magnet'] = $magnet;
+       
 		// Get picture dimension information
 		if (isset($Loc->PrmLst['adjust'])) {
 			$FieldLen = 0;
@@ -1430,14 +1608,25 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 	
 	/**
 	 * Add a picture inside the archive, use parameters 'from' and 'as'.
-	 * Argument $Prm is only used for error messages.
+	 *
+	 * @param string  $Value
+	 * @param array   $PrmLst
+	 * @param string  $Txt
+	 * @param object  $Loc
+	 * @param array   $Prm     Caller parameter. Only used for error messages.
 	 */
 	function TbsPicAdd(&$Value, &$PrmLst, &$Txt, &$Loc, $Prm) {
-		
+        
+        if ($Value == '') {
+            // The magnet parameter will delete the picture container
+            return true;
+        }
+        
 		$TBS = &$this->TBS;
 
 		$PrmLst['pic_prepared'] = true; // mark the locator as Picture prepared
 		
+		// Path of the external file to copy inside the current document.
 		$ExternalPath = $this->TbsPicExternalPath($Value, $PrmLst);
 		
 		if ($ExternalPath === false) {
@@ -1452,7 +1641,7 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 			return false;
 		}
 
-		// set the name of the internal file
+		// Path to the target file to add into the current document.
 		if (isset($PrmLst['as'])) {
 			if (!isset($PrmLst['pic_prepared'])) $TBS->meth_Merge_AutoVar($PrmLst['as'],true); // merge automatic TBS fields in the path
 			$InternalPath = str_replace($TBS->_ChrVal,$Value,$PrmLst['as']); // merge [val] fields in the path
@@ -1481,7 +1670,8 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 			$this->OpenDoc_ManifestChange($InternalPath,'');
 		} elseif ($this->ExtType==='openxml') {
 			// Microsoft Office document
-			$this->OpenXML_CTypesPrepareExt($InternalPath, '');
+			$this->OpenXML_CTypesPrepareExt($InternalPath, ''); // add the mime type if missing into the dedicated sub-file
+			// Add the file into de Relation declaration
 			$BackNbr = max(substr_count($TBS->OtbsCurrFile, '/') - 1, 0); // docx=>"media/img.png", xlsx & pptx=>"../media/img.png"
 			$TargetDir = str_repeat('../', $BackNbr).'media/';
 			$FileName = basename($InternalPath);
@@ -1502,6 +1692,60 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 
 		return true;
 
+	}
+
+	function TbsDocFieldPrepare(&$Txt, &$Loc) {
+		
+		if ($this->ExtEquiv === 'docx') {
+			
+			// Find the first <w:r> element of the Complexe Field
+			$loc_beg = clsTbsXmlLoc::FindStartTagHavingAtt($Txt, 'w:fldCharType="begin"', $Loc->PosBeg, false); // find a <w:fldChar>
+			if ($loc_beg === false) return;
+			$loc_beg = clsTbsXmlLoc::FindStartTag($Txt, 'w:r', $loc_beg->PosBeg, false); // the <w:r> that contains the <w:fldChar>
+			
+			// Find the last <w:r> element of the Complexe Field
+			$loc_end = clsTbsXmlLoc::FindStartTagHavingAtt($Txt, 'w:fldCharType="end"', $Loc->PosEnd, true); // find a <w:fldChar>
+			if ($loc_end === false) return;
+			$loc_end = clsTbsXmlLoc::FindElement($Txt, 'w:r', $loc_end->PosBeg, false); // the <w:r> that contains the <w:fldChar>
+
+			// The penultimate <w:r> element is the latest calculated field. We use it for getting the formating text.
+			$loc_wr = clsTbsXmlLoc::FindElement($Txt, 'w:r', $loc_end->PosBeg - 1, false);
+			if ($loc_wr === false) {
+				$x = '<w:r><w:t>DOCFIELD</w:t></w:r>';
+			} else {
+				// Delete the Complete Field element if any (should not)
+				$x = $loc_wr->GetSrc();
+				$this->XML_DeleteElements($x, array('w:instrText', 'w:fldChar'));
+				// Replace text
+				$lz = clsTbsXmlLoc::FindElement($x, 'w:t', 0);
+				if ($lz === false) {
+					// Not found => we create a new text before the closing tag
+					$x = substr_replace($x, '<w:t>DOCFIELD</w:t>', -6, 0);
+				} else {
+					$lz->ReplaceInnerSrc('DOCFIELD');
+				}
+			}
+			
+			// Replace template
+			$len = $loc_end->PosEnd - $loc_beg->PosBeg + 1;
+			$Txt = substr_replace($Txt, $x, $loc_beg->PosBeg, $len);
+			
+			// Move the locator
+			$p = strpos($x, '>DOCFIELD<') + 1;
+			$Loc->PosBeg = $loc_beg->PosBeg + $p;
+			$Loc->PosEnd = $Loc->PosBeg + strlen('DOCFIELD') - 1;
+			
+		} elseif ($this->ExtEquiv === 'odt') {
+			
+			$loc_el = clsTbsXmlLoc::FindStartTagByPrefix($Txt, '', $Loc->PosBeg, false);
+			if ( ($loc_el !== false) && ($loc_el->Name === 'text:conditional-text') ) {
+				$loc_el->FindEndTag();
+				$Loc->PosBeg = $loc_el->PosBeg;
+				$Loc->PosEnd = $loc_el->PosEnd; 
+			}
+			
+		}
+		
 	}
 
 	// Adjust the dimensions if the picture
@@ -1572,46 +1816,87 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 	}
 	
 	/**
-	 * Search a string in a list if several sub-file in the archive.
-	 * @param $files An associated array of sub-files to scann. Structure: $key => IdxOrName
-	 * @param $str   The string to search.
-	 * @param $returnFirstFind  true to return only the first record fund.
-	 * @return a single record or a recordset structured like: array('key'=>, 'idx'=>, 'src'=>, 'pos'=>, 'curr'=>)
+	 * Search 1 or 2 strings in a list if several sub-file in the archive.
+	 *
+	 * @param string|array $files An associated array of sub-files to scann or a pattern using 1 wildcard '*'.
+	 * @param string|array $str   The strings that all be prensents in the content of the file.
+	 *                            It can be a array of strings, or a single string.
+	 * @param boolean             $returnFirstFind  true to return only the first record fund.
+	 *
+	 * @return array Return a single record or a recordset structured like: array('key'=>, 'idx'=>, 'src'=>, 'pos'=>, 'curr'=>)
 	 */
 	function TbsSearchInFiles($files, $str, $returnFirstFound = true) {
 
-		$keys_ok = array();
-
-		// transform the list of files into a list of available idx
-		$keys_todo = array();
-		$idx_keys = array();
-		foreach($files as $k=>$f) {
-			$idx = $this->FileGetIdx($f);
-			if ($idx!==false) {
-				$keys_todo[$k] = $idx;
-				$idx_keys[$idx] = $k;
+		// Prepare variables
+	
+		if (is_string($str)) {
+			$str = array($str);
+		}
+	
+		$keys_todo = array(); // list of keys that remains to be done
+		$idx_keys = array();  // trancoding idx to key
+		if (is_array($files)) {
+			// A list of files given => transform the list of files into a list of available idx
+			foreach($files as $k => $f) {
+				$idx = $this->FileGetIdx($f);
+				if ($idx!==false) {
+					$keys_todo[$k] = $idx;
+					$idx_keys[$idx] = $k;
+				}
+			}
+		} else {
+			// A string is given => 
+			$parts = explode('*', $files);
+			$last = count($parts) - 1;
+			if ($last == 0) {
+				$parts[1] = '';
+				$last = 1;
+			}
+			$len_0 = strlen($parts[0]);
+			$len_1 = strlen($parts[1]);
+			foreach ($this->CdFileByName as $f => $idx) {
+				if ( ($len_0 == 0) || (substr($f, 0, $len_0) == $parts[0]) ) {
+					if ( ($len_1 == 0) || (substr($f, -$len_1) == $parts[1]) ) {
+						$keys_todo[$f] = $idx;
+						$idx_keys[$idx] = $f;
+					}
+				}
 			}
 		}
 
+		// Start search
+		
+		$result = array();
+		
 		// Search in the current sub-file
 		if ( ($this->TbsCurrIdx!==false) && isset($idx_keys[$this->TbsCurrIdx]) ) {
 			$key = $idx_keys[$this->TbsCurrIdx];
-			$p = strpos($this->TBS->Source, $str);
-			if ($p!==false) {
-				$keys_ok[] = array('key' => $key, 'idx' => $this->TbsCurrIdx, 'src' => &$this->TBS->Source, 'pos' => $p, 'curr'=>true);
-				if ($returnFirstFound) return $keys_ok[0];
+			$p = true;
+			foreach ($str as $s) {
+				if ($p !== false) {
+					$p = strpos($this->TBS->Source, $s);
+				}
+			}
+			if ($p !== false) {
+				$result[] = array('key' => $key, 'idx' => $this->TbsCurrIdx, 'src' => &$this->TBS->Source, 'pos' => $p, 'curr'=>true);
+				if ($returnFirstFound) return $result[0];
 			}
 			unset($keys_todo[$key]);
 		}
 
 		// Search in the store
-		foreach($this->TbsStoreLst as $idx => $s) {
+		foreach($this->TbsStoreLst as $idx => $info) {
 			if ( ($idx!==$this->TbsCurrIdx) && isset($idx_keys[$idx]) ) {
 				$key = $idx_keys[$idx];
-				$p = strpos($s['src'], $str);
-				if ($p!==false) {
-					$keys_ok[] = array('key' => $key, 'idx' => $idx, 'src' => &$s['src'], 'pos' => $p, 'curr'=>false);
-					if ($returnFirstFound) return $keys_ok[0];
+				$p = true;
+				foreach ($str as $s) {
+					if ($p !== false) {
+						$p = strpos($info['src'], $s);
+					}
+				}
+				if ($p !== false) {
+					$result[] = array('key' => $key, 'idx' => $idx, 'src' => &$info['src'], 'pos' => $p, 'curr'=>false);
+					if ($returnFirstFound) return $result[0];
 				}
 				unset($keys_todo[$key]);
 			}
@@ -1620,17 +1905,22 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 		// Search in other sub-files (never opened)
 		foreach ($keys_todo as $key => $idx) {
 			$txt = $this->FileRead($idx);
-			$p = strpos($txt, $str);
-			if ($p!==false) {
-				$keys_ok[] = array('key' => $key, 'idx' => $idx, 'src' => $txt, 'pos' => $p, 'curr'=>false);
-				if ($returnFirstFound) return $keys_ok[0];
+			$p = true;
+			foreach ($str as $s) {
+				if ($p !== false) {
+					$p = strpos($txt, $s);
+				}
+			}
+			if ($p !== false) {
+				$result[] = array('key' => $key, 'idx' => $idx, 'src' => $txt, 'pos' => $p, 'curr'=>false);
+				if ($returnFirstFound) return $result[0];
 			}
 		}
 
 		if ($returnFirstFound) {
 			return  array('key'=>false, 'idx'=>false, 'src'=>false, 'pos'=>false, 'curr'=>false);
 		} else {
-			return $keys_ok;
+			return $result;
 		}
 
 	}
@@ -1682,12 +1972,13 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 	 * @return string The merged value of the parameter.
 	 */
 	function TbsMergeVarFields($PrmVal, $FldVal) {
+		if ($PrmVal === true) $PrmVal = ''; // TBS set the value to true if no value set, but it is converted into '1'.
 		$this->TBS->meth_Merge_AutoVar($PrmVal, true);
 		$PrmVal = str_replace($this->TBS->_ChrVal, $FldVal, $PrmVal);
 		return $PrmVal;
 	}
 
-	function TbsDeleteColumns(&$Txt, $Value, $PrmLst, $PosBeg, $PosEnd) {
+	function TbsDeleteColumns(&$Txt, $Value, $PrmLst, $PosBeg) {
 
 		$ext = $this->ExtEquiv;
 		if ($ext==='docx') {
@@ -1705,19 +1996,53 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 		} else {
 			return false;
 		}
-
+		
 		if (is_array($Value)) $Value = implode(',', $Value);
 
-		// Retreive the list of columns id to delete
-		$col_lst = $this->TbsMergeVarFields($PrmLst['colnum'], $Value);
+		// Column set
+		$shift_ok = false;
+		if (isset($PrmLst['colset'])) {
+			$col_set = str_replace(' ', '', $PrmLst['colset']);
+			$col_set = explode('|', $col_set);
+			$col_lst = array();
+			$val_lst = explode(',', $Value);
+			foreach ($val_lst as $s) {
+				$idx = intval($s) - 1;
+				if (isset($col_set[$idx])) {
+					$col_lst[] = $col_set[$idx];
+				}
+			}
+			$col_lst = implode(',', $col_lst);
+		} elseif (isset($PrmLst['colnum'])) {
+			// Retreive the list of columns id to delete
+			$col_lst = $this->TbsMergeVarFields($PrmLst['colnum'], $Value); // prm equal to true if value is not given
+			$shift_ok = true;
+		} else {
+			$col_lst = $Value;
+			$shift_ok = true;
+		}
+		
+		// Convert the colmun list into an array
 		$col_lst = str_replace(' ', '', $col_lst);
 		if ( ($col_lst=='') || ($col_lst=='0') ) return false; // there is nothing to do
 		$col_lst = explode(',', $col_lst);
 		$col_nbr = count($col_lst);
-		for ($c=0; $c<$col_nbr; $c++) $col_lst[$c] = intval($col_lst[$c]); // Conversion into numerical
-
+		for ($c = 0; $c < $col_nbr; $c++) {
+			// In cas of range separator
+			$x = explode('-', $col_lst[$c]);
+			$x0 = intval($x[0]);
+			$col_lst[$c] = $x0;
+			// Range separator
+			if (isset($x[1])) {
+				$x1 = intval($x[1]);
+				for ($i = $x0 + 1 ; $i <= $x1 ; $i++) {
+					$col_lst[] = $i; // added after the existing values
+				}
+			}
+		}
+		
 		// Add columns by shifting
-		if (isset($PrmLst['colshift'])) {
+		if ($shift_ok && isset($PrmLst['colshift'])) {
 			$col_shift = intval($this->TbsMergeVarFields($PrmLst['colshift'], $Value));
 			if ($col_shift<>0) {
 				$step = ($col_shift>0) ? -1 : +1;
@@ -1731,10 +2056,13 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 		$col_lst = array_unique($col_lst, SORT_NUMERIC); // Delete duplicated columns
 		sort($col_lst, SORT_NUMERIC); // Sort colmun id in order
 		$col_max = $col_lst[(count($col_lst)-1)]; // Last column to delete
-
-		// Delete the TBS tag
-		$Txt = substr_replace($Txt, '', $PosBeg, $PosEnd - $PosBeg + 1);
-
+		
+		// Delete impossible col num (like zero)
+		while ( (count($col_lst) > 0) && ($col_lst[0] <= 0) ) {
+			array_shift($col_lst);
+		}
+		if (count($col_lst) == 0) return false;
+		
 		// Look for the source of the table
 		$Loc = clsTbsXmlLoc::FindElement($Txt, $el_table, $PosBeg, false);
 		if ($Loc===false) return false;
@@ -1831,30 +2159,27 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 
 		$this->ExtEquiv = false;
 		$this->ExtType = false;
-	
+
+        // Find the extension
 		if ($Ext===false) {
-			// Get the extension of the current archive
-			if ($this->ArchIsStream) {
-				$Ext = '';
-			} else {
-				$Ext = basename($this->ArchFile);
-				$p = strrpos($Ext, '.');
-				$Ext = ($p===false) ? '' : strtolower(substr($Ext, $p + 1));
-			}
-			$Frm = $this->Ext_DeductFormat($Ext, true);
-			// Rename the name of the phantom file if it is a stream
-			if ( $this->ArchIsStream && (strlen($Ext)>2) ) $this->ArchFile = str_replace('.zip', '.'.$Ext, $this->ArchFile);
-		} else {
-			// The extension is forced
-			$Frm = $this->Ext_DeductFormat($Ext, false);
-		}
+            $Ext = basename($this->ArchFile);
+            $p = strrpos($Ext, '.');
+            $Ext = ($p===false) ? '' : strtolower(substr($Ext, $p + 1));
+            // At this point, $Ext may have special value '' or 'zip' (no extension in the the template file from a local file or stream file).
+        }
+    
+        $Frm = $this->Ext_DeductFormatFromExt($Ext);       
+        if ($Frm===false) {
+            $Frm = $this->Ext_DeductFormatFromContents($Ext); // may force $Ext to a valid extension
+        }
 
 		$TBS = &$this->TBS;
 		$set_option = method_exists($TBS, 'SetOption');
 		
 		$i = false;
 		$block_alias = false;
-		
+        
+	
 		if (isset($GLOBAL['_OPENTBS_AutoExt'][$Ext])) {
 			// User defined information
 			$i = $GLOBAL['_OPENTBS_AutoExt'][$Ext];
@@ -1869,7 +2194,10 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 			if ($Ext==='ots') $this->ExtEquiv = 'ods';
 			$this->ExtType = 'odf';
 			$ctype = array('t' => 'text', 's' => 'spreadsheet', 'g' => 'graphics', 'f' => 'formula', 'p' => 'presentation', 'm' => 'text-master');
-			$i['ctype'] .= $ctype[($Ext[2])];
+            $z = substr($Ext, 2, 1);
+            if (isset($ctype[$z])) {
+                $i['ctype'] .= $ctype[$z];
+            }
 			$i['pic_ext'] = array('png' => 'png', 'bmp' => 'bmp', 'gif' => 'gif', 'jpg' => 'jpeg', 'jpeg' => 'jpeg', 'jpe' => 'jpeg', 'jfif' => 'jpeg', 'tif' => 'tiff', 'tiff' => 'tiff');
 			$block_alias = array(
 				'tbs:p' => 'text:p',              // ODT+ODP
@@ -1907,11 +2235,13 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 				$x = null;
 			}
 			$ctype = 'application/vnd.openxmlformats-officedocument.';
-			if ($Ext==='docx') {
+			if ( ($Ext==='docx') || ($Ext==='docm') ) {
 				// Notes: (1) '<w:br/>' works but '</w:t><w:br/><w:t>' enforce compatibility with Libre Office. (2) Line-breaks merged in attributes will corrupt the DOCX anyway.
 				$i = array('br' => '</w:t><w:br/><w:t>', 'ctype' => $ctype . 'wordprocessingml.document', 'pic_path' => 'word/media/', 'rpl_what' => $x, 'rpl_with' => '\'', 'pic_entity'=>'w:drawing');
+				if ($Ext==='docm') $i['ctype'] = 'application/vnd.ms-word.document.macroEnabled.12';
 				$i['main'] = $this->OpenXML_MapGetMain('wordprocessingml.document.main+xml', 'word/document.xml');
 				$i['load'] = $this->OpenXML_MapGetFiles(array('wordprocessingml.header+xml', 'wordprocessingml.footer+xml'));
+				$this->ExtEquiv = 'docx';
 				$block_alias = array(
 					'tbs:p' => 'w:p',
 					'tbs:title' => 'w:p',
@@ -1920,8 +2250,8 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 					'tbs:row' => 'w:tr',
 					'tbs:cell' => 'w:tc',
 					'tbs:page' => array(&$this, 'MsWord_GetPage'),
-					'tbs:draw' => 'mc:AlternateContent',
-					'tbs:drawgroup' => 'mc:AlternateContent',
+					'tbs:draw' => array(&$this, 'MsWord_GetDraw'),
+					'tbs:drawgroup' => array(&$this, 'MsWord_GetDraw'),
 					'tbs:drawitem' => 'wps:wsp',
 					'tbs:listitem' => 'w:p',
 				);  
@@ -1939,6 +2269,7 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 			} elseif ( ($Ext==='xlsx') || ($Ext==='xlsm')) {
 				$this->MsExcel_DeleteCalcChain();
 				$i = array('br' => false, 'ctype' => $ctype . 'spreadsheetml.sheet', 'pic_path' => 'xl/media/', 'pic_entity'=>'xdr:twoCellAnchor');
+				if ($Ext==='xlsm') $i['ctype'] = 'application/vnd.ms-excel.sheet.macroEnabled.12';
 				$i['main'] = $this->OpenXML_MapGetMain('spreadsheetml.worksheet+xml', 'xl/worksheets/sheet1.xml');
 				$this->ExtEquiv = 'xlsx';
 				$block_alias = array(
@@ -1948,11 +2279,13 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 					'tbs:drawgroup' => 'xdr:twoCellAnchor',
 					'tbs:drawitem' => 'xdr:sp',
 				);
-			} elseif ($Ext==='pptx') {
+			} elseif ( ($Ext==='pptx') || ($Ext==='pptm') ){
 				$i = array('br' => false, 'ctype' => $ctype . 'presentationml.presentation', 'pic_path' => 'ppt/media/', 'rpl_what' => $x, 'rpl_with' => '\'', 'pic_entity'=>'p:pic');
+				if ($Ext==='pptm') $i['ctype'] = 'application/vnd.ms-powerpoint.presentation.macroEnabled.12';
 				$this->MsPowerpoint_InitSlideLst();
 				$i['main'] = (isset($this->OpenXmlSlideLst[0])) ? $this->OpenXmlSlideLst[0]['file'] : 'ppt/slides/slide1.xml';
 				$i['load'] = $this->OpenXML_MapGetFiles(array('presentationml.notesSlide+xml')); // auto-load comments
+				$this->ExtEquiv = 'pptx';
 				$block_alias = array(
 					'tbs:p' => 'a:p',
 					'tbs:title' => 'a:p',
@@ -1983,14 +2316,27 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 	}
 
 	// Return the type of document corresponding to the given extension.
-	function Ext_DeductFormat(&$Ext, $Search) {
+	function Ext_DeductFormatFromExt($Ext) {
 		if (strpos(',odt,ods,odg,odf,odp,odm,ott,ots,otg,otp,', ',' . $Ext . ',') !== false) return 'odf';
-		if (strpos(',docx,xlsx,xlsm,pptx,', ',' . $Ext . ',') !== false) return 'openxml';
-		if (!$Search) return false;
+		if (strpos(',docx,docm,xlsx,xlsm,pptx,pptm,', ',' . $Ext . ',') !== false) return 'openxml';
+		return false;
+	}
+
+	// Return the type of document corresponding to the inner contents.
+	function Ext_DeductFormatFromContents(&$Ext) {
 		if ($this->FileExists('content.xml')) {
 			// OpenOffice documents
-			if ($this->FileExists('META-INF/manifest.xml')) {
-				$Ext = '?'; // not needed for processing OpenOffice documents
+            $meta = 'META-INF/manifest.xml';
+			if ($this->FileExists($meta)) {
+                $prefix = 'application/vnd.oasis.opendocument.';
+                $txt = $this->FileRead($meta, true);
+                if (strpos($txt, $prefix.'text') !== false) {
+                    $Ext = 'odt';
+                } elseif (strpos($txt, $prefix.'presentation') !== false) {
+                    $Ext = 'odp';
+                } elseif (strpos($txt, $prefix.'spreadsheet') !== false) {
+                    $Ext = 'ods';
+                }
 				return 'odf';
 			}
 		} elseif ($this->FileExists('[Content_Types].xml')) {
@@ -2008,7 +2354,7 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 		}
 		return false;
 	}
-
+    
 	// Return the idx of the main document, if any.
 	function Ext_GetMainIdx() {
 		if ( ($this->ExtInfo!==false) && isset($this->ExtInfo['main']) ) {
@@ -2018,9 +2364,14 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 		}
 	}
 
-	function XML_FoundTagStart($Txt, $Tag, $PosBeg) {
-	// Found the next tag of the asked type. (Not specific to MsWord, works for any XML)
-	// Tag must be prefixed with '<' or '</'.
+	/**
+     * Search the next tag of the asked type searching forward. (Not specific to MsWord, works for any XML)
+	 * @param string  $Txt
+	 * @param string  $Tag     must be prefixed with '<' or '</'.
+	 * @param integer $PosBeg 
+	 * @return integer|false
+	 */
+	function XML_SearchTagForward($Txt, $Tag, $PosBeg) {
 		$len = strlen($Tag);
 		$p = $PosBeg;
 		while ($p!==false) {
@@ -2102,19 +2453,25 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 	}
 
 	/**
-	 * Change an attribute's value or an entity's value in the first element in a given sub-file.
+	 * Read or write an attribute's value or an entity's value in the first element in a given sub-file.
 	 * @param {mixed}  $SubFile : the name or the index of the sub-file. Use value false to get the current sub-file.
 	 * @param {string} $ElPath  : path of the element. For example : 'w:document/w:body/w:p'.
 	 * @param {string|boolean} $Att    : the attribute, or false to replace the entity's value.
-	 * @param {string|boolean} $NewVal : the new value, or false to delete the attribute.
-	 * @return {boolean} True if the attribute is found and processed. False otherwise.
+	 * @param {string|boolean} $NewVal : the new value, or false to delete the attribute, or null to return the attribute’s value without writing.
+	 * @return {string|boolean} Reading : return true if the attribute is found and processed. False otherwise.
+	 *                          Writing : return the value as a string, of false if the attribute or the entity is not found.
+	 *                                    return false if $Att = false and the entity is a self-closing tag.
 	 */
-	function XML_ForceAtt($SubFile, $ElPath, $Att, $NewVal, $AddElIfMissing = false) {
+	function XML_ReadWriteAtt($SubFile, $ElPath, $Att, $NewVal, $AddElIfMissing = false) {
 	
 		// Find the file
-		$idx = $this->FileGetIdx($SubFile);
+		if ($SubFile === false) {
+			$idx = $this->TbsCurrIdx;
+		} else {
+			$idx = $this->FileGetIdx($SubFile);
+		}
 		if ($idx === false) return false;
-		$Txt = $this->TbsStoreGet($idx, 'XML_ForceAtt');
+		$Txt = $this->TbsStoreGet($idx, 'XML_ReadWriteAtt');
 	
 		// Find the element
 		$el_lst = explode('/', $ElPath);
@@ -2145,7 +2502,9 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 		$save = true;
 		if ($el_idx < $el_nb) {
 			// One of the entities is not found => create entities
-			if ($NewVal === false) {
+			if (is_null($NewVal)) {
+				return false;
+			} elseif ($NewVal === false) {
 				// Nothing to do
 				$save = false;
 			} else {
@@ -2168,8 +2527,19 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 				$Txt = substr_replace($Txt, $x, $loc_prev->pET_PosBeg, 0);
 			}
 		} else {
-			// The last entity is found => force the attribute
-			if ($NewVal === false) {
+			// The last entity is found
+			if (is_null($NewVal)) {
+				// Read
+				if ($Att === false) {
+					// read the entity
+					$loc->FindEndTag();
+					return $loc->GetInnerSrc();
+				} else {
+					// read the attribute
+					return $loc->GetAttLazy($Att);
+				}
+			} elseif ($NewVal === false) {
+				// Delete
 				if ($Att === false) {
 					// delete the entity
 					$loc->Delete();
@@ -2178,6 +2548,7 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 					$loc->DeleteAtt($Att);
 				}
 			} else {
+				// Modifiy
 				if ($Att === false) {
 					// change the entity's value
 					$loc->FindEndTag();
@@ -2217,41 +2588,282 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 	}
 
 	/**
-	 * Return the column number from a cell reference like "B3".
+	 * Return the next cell of the range (actual or virtual). Return false if there is no more cells for this range in the sheet.
+	 * The process assumes that :
+	 * - trailing rows of the range can be misssing in the sheet but there is no missing row  between rows.
+	 * - trailing cols of the range can be misssing in a row     but there is no missing cell between cells.
+	 * If « $AddMissing = false » :
+	 *   Cells of missing columns are return by the function as a valid object with the property « Exists = false ».
+	 *   Cells of missing rows    are return by the function as false.
+	 *   But missing cells are skiped in case of a range with with full columns.
+	 *
+     * @param string|object  $SheetLoc The locator of the sheet entity that directly contains row.
+	 * @param array          $Range    A range info formated as array('cs'=>...,'rs'=>...,'ce'=>...,'re'=>...)
+	 * @param object         $PrevLoc  The previous locator returned by the function.
+	 * @param string         $RowEl    Name of the XML entity for rows.
+	 * @param string         $CellEl   Name of the XML entity for cells.
+	 * @param boolean        $AddMissRow True means that an empty row in inserted in order to finish the range visit.
+	 *
+	 * @return object The clsTbsXmlLoc object of the cell element, with extra properties info : cellCol, cellRow
+	 *                Note that is can be a not existing item if the asked range goes out of the sheet.
 	 */
-	function Misc_ColNum($ColRef, $IsODF) {
-
-		if ($IsODF) {
-			$p = strpos($ColRef, '.');
-			if ($p!==false) $ColRef = substr($ColRef, $p); // delete the table name wich is in prefix
-			$ColRef = str_replace( array('.','$'), '', $ColRef);
-			$ColRef = explode(':', $ColRef);
-			$ColRef = $ColRef[0];
+	function XML_GetNextCellLoc(&$SheetLoc, $Range, $PrevLoc, $RowEl, $CellEl, $AttRowR, $AttCellR, $AddMissing) {
+		
+		$debug = false;
+		// Retreive previous and current cell coordinates
+		if ( $PrevLoc === false ) {
+			$rowLoc = false;
+			$currRow = 0;
+			$currCol = 0;
+			$targetRow = $Range['rs'];
+			$targetCol = $Range['cs'];
+			$currRowOk = true;
+			$currColOk = true;
+			$r_pos = 0;
+			$c_pos = 0;
+		} else {
+			$repeat = false;
+			$rowLoc = $PrevLoc->Parent;
+			$currRow = $PrevLoc->cellRow + ($rowLoc->RepeatMax - $rowLoc->RepeatIdx);
+			$currCol = $PrevLoc->cellCol;
+			$targetCol = $currCol + 1;
+			$same_row = ($targetCol <=  $Range['ce']);
+			if ($Range['cfull'] && (!$PrevLoc->Exists)) {
+				$same_row = false;
+			}
+			if ($same_row) {
+				// we will search next cell in the same row
+				$targetRow = $currRow;
+				if ($PrevLoc->RepeatIdx < $PrevLoc->RepeatMax) {
+					// the cell is repeated
+					$PrevLoc->RepeatIdx++;
+					$repeat = $PrevLoc;
+				} elseif (isset($rowLoc->CellLst[$targetCol])) {
+					// the row is repeated
+					$repeat = $rowLoc->CellLst[$targetCol];
+				} else {
+					// no repeated
+					$c_pos = $PrevLoc->PosEnd + 1;
+					$currColOk = $PrevLoc->Exists;
+				}
+			} else {
+				// we will search the first cell of the range in the next row
+				$currCol = 0;
+				$targetCol = $Range['cs'];
+				$targetRow = $currRow + 1;
+				if ($targetRow > $Range['re']) {
+					return false;
+				}
+				// we look if the row is repeated
+				if ($rowLoc->RepeatIdx < $rowLoc->RepeatMax) {
+					$rowLoc->RepeatIdx++;
+					$repeat = $rowLoc->CellLst[$targetCol];
+				} else {
+					$c_pos = 0;
+					$currColOk = true;
+				}
+			}
+			// Return the repeated cell if any
+			if ($repeat !== false) {
+				if (!isset($targetRow)) exit("\n oups");
+				if ($debug) echo "\n* XML_GetNextCellLoc CELLULE REPETEE : targetRow = $targetRow, targetCol = $targetCol";
+				$repeat->cellCol = $targetCol;
+				$repeat->cellRow = $targetRow;
+				return $repeat;
+			}
+			$currRowOk = $PrevLoc->RowOk;
+			$r_pos = $PrevLoc->Parent->PosEnd + 1;
 		}
 
-		$num = 0;
-		$rank = 0;
-		for ($i=strlen($ColRef)-1;$i>=0;$i--) {
-			$l = $ColRef[$i];
-			if (!is_numeric($l)) {
-				$l = ord(strtoupper($l)) -64;
-				if ($l>0 && $l<27) {
-					$num = $num + $l*pow(26,$rank);
+
+		// Moves to the next cell
+
+		if ($debug) echo "\n* XML_GetNextCellLoc : currRow = $currRow, currCol = $currCol | targetRow = $targetRow, targetCol = $targetCol | currRowOk = ".var_export($currRowOk,true).", currColOk = ".var_export($currColOk,true);
+		
+		// Reach the asked row 
+		if ($debug) echo "\n  * Search Row : loop";
+		while ( $currRowOk && ($currRow < $targetRow) ) {
+			if ($debug) echo "\n  * Search Row #{$currRow}, r_pos=$r_pos : ";
+			if ( ($rowLoc !== false) && ($rowLoc->RepeatIdx < $rowLoc->RepeatMax) ) {
+				if ($debug) echo "ok REPEATED";
+				// It is a repated row
+				$rowLoc->RepeatIdx++;
+				$currRow++;
+			} else {
+				$rowLoc = clsTbsXmlLoc::FindElement($SheetLoc, $RowEl, $r_pos, true);
+				if ($rowLoc === false) {
+					if ($debug) echo "FAIL row not found";
+					$currRowOk = false;
 				} else {
-					return $this->RaiseError('(Sheet) Reference of cell \''.$ColRef.'\' cannot be recognized.');
+					if ($debug) echo "ok found";
+					$r_pos = $rowLoc->PosEnd + 1;
+					$currRow++;
+					// Repeat info
+					$rowLoc->RepeatIdx = 1;
+					$rowLoc->RepeatMax = 1;
+					$rowLoc->CellLst = array();
+					if ($AttRowR) {
+						$max = $rowLoc->GetAttLazy($AttRowR);
+						if ($max !== false) {
+							$rowLoc->RepeatMax = intval($max);
+						}
+					}
 				}
-				$rank++;
+			}
+		}
+		
+		// Insert missing rows
+		if ($debug) echo "\n  * Insert Row : check";
+		if (!$currRowOk) {
+			$currColOk = false;
+			if ($AddMissing) {
+				// Insert the empty rows
+				$x = '<' . $RowEl . '></' . $RowEl . '>';
+				$x_len = strlen($x);
+				$nb = ($targetRow - $currRow);
+				$SheetLoc->Txt = substr_replace($SheetLoc->Txt, str_repeat($x, $nb), $r_pos, 0);
+				// The row locator must be targeted on the last inserted row
+				$r_pos = $r_pos + ($nb - 1) * $x_len;
+				$rowLoc = new clsTbsXmlLoc($SheetLoc->Txt, $RowEl, $r_pos, null, $SheetLoc, false);
+				$rowLoc->FindEndTag();
+			} else {
+				// No more data
+				return false;
+			}
+		}
+		
+		// Reach the asked cell 
+		if ($debug) echo "\n  * Search Col : loop : currColOk=" . var_export($currColOk, true) . ", currCol=$currCol, targetCol=$targetCol";
+		$cellLoc = false;
+		while ($currColOk && ($currCol < $targetCol)) {
+			if ($rowLoc === false) return $this->RaiseError("No parent row.");
+			if (isset($rowLoc->CellLst[$currCol])) return $this->RaiseError("This repeated row should have been previsouly catched.");
+			if ($debug) echo "\n  * Search Col (c_pos=$c_pos) : ";
+			if ( ($cellLoc !== false) && ($cellLoc->RepeatIdx < $cellLoc->RepeatMax) ) {
+				if ($debug) echo "ok REPEATED";
+				// It is a repated row
+				$cellLoc->RepeatIdx++;
+				$currCol++;
+			} else {
+				$cellLoc = clsTbsXmlLoc::FindElement($rowLoc, $CellEl, $c_pos, true);
+				if ($cellLoc === false) {
+					if ($debug) echo "FAIL, rowLoc = " . $rowLoc->GetSrc();
+					$currColOk = false;
+				} else {
+					if ($debug) echo "ok found";
+					$c_pos = $cellLoc->PosEnd + 1;
+					$currCol++;
+					// Repeat info
+					$cellLoc->RepeatIdx = 1;
+					$cellLoc->RepeatMax = 1;
+					if ($AttCellR) {
+						$max = $cellLoc->GetAttLazy($AttCellR);
+						if ($max !== false) {
+							$cellLoc->RepeatMax = intval($max);
+						}
+					}
+				}
 			}
 		}
 
-		return $num;
+		// Insert missing cells
+		if ($debug) echo "\n  * Insert Cell : check";
+		if (!$currColOk) {
+			if ($AddMissing) {
+				// Insert the empty cells
+				$x = '<' . $CellEl . '></' . $CellEl . '>';
+				$x_len = strlen($x);
+				$nb = ($targetCol - $currCol);
+				$rowLoc->AppendInnerSrc(str_repeat($x, $nb));
+				// The cell locator must be targeted on the last inserted cell
+				$cellLoc = new clsTbsXmlLoc($rowLoc->Txt, $CellEl, ($rowLoc->GetInnerAppendPos() - $x_len), null, $rowLoc, false);
+				$cellLoc->FindEndTag();
+			} else {
+				// No more data => locator on a non-existing entity ($cellLoc->Exists = false)
+				if ($debug) echo "\n* Insert Cell : create phantom cell";
+				$cellLoc = clsTbsXmlLoc::CreatePhantomElement($rowLoc, $rowLoc->GetInnerAppendPos());
+			}
+			$cellLoc->RepeatIdx = 1;
+			$cellLoc->RepeatMax = 1;
+		}
+			
+		$cellLoc->RowOk   = $currRowOk; // true if the row did exists, false if the row has been added by the function 
+		$cellLoc->cellRow = $targetRow; // row num in the sheet
+		$cellLoc->cellCol = $targetCol; // col num in the sheet
+
+		// If the row is repeated, then we save its childs
+		if ( ($rowLoc->RepeatMax > 1) && ($rowLoc->RepeatIdx === 1) ) {
+			$rowLoc->CellLst[$targetCol] = $cellLoc;
+		}
+		
+		//echo "\n   rowLoc->GetSrc   = " . $rowLoc->GetSrc();
+		//echo "\n   cellLoc = " . var_export($cellLoc, true);
+
+		if ($debug) echo "\n  * Result cellLoc = ($targetRow, $targetCol)  RowOk=".var_export($currRowOk,true).", Exists=".var_export($cellLoc->Exists,true);
+		if ($debug) echo "\n  * cellLoc->GetSrc  = " . $cellLoc->GetSrc();
+
+		// In case of a full colmun range, we don't return the extra missing columns.
+		// This means a valid row can have no cells.
+		if ( $Range['cfull'] && (!$cellLoc->Exists) ) {
+			if ($debug) echo " ... swicht to next cell";
+			return $this->XML_GetNextCellLoc($SheetLoc, $Range, $cellLoc, $RowEl, $CellEl, $AttRowR, $AttCellR, $AddMissing);
+		}
+		
+		return $cellLoc;
+		
+	}
+	
+	/**
+	 * Return the column number from a cell reference. First colmun is number 1.
+	 * Can also return the row number if asked.
+	 * Return 0 is the column is not specified.
+	 * Return '' for the row num if it is not specified.
+	 *
+	 * @param string  $CellRef  The reference of a cell. Like "B3" or "AZ48".
+	 * @param boolean $WithRow  (optional) Use true in order to return both col and row numbers.
+	 *
+	 * @return integer|array|false  The column number, or an array with both the colum number and the row number.
+	 */
+	function Sheet_ColNum($CellRef, $WithRow = false) {
+
+		$col = 0;
+		$row = '';
+		$rank = 0;
+		$Prefix = '$'; // character prefix allowed before col and row values.
+		
+		// We read the string backward because that the only way to know the rank.
+		for ($i = strlen($CellRef) -1 ; $i >= 0 ; $i--) {
+			$l = $CellRef[$i];
+			if ($l === $Prefix) {
+			} elseif (is_numeric($l)) {
+				$row = $l . $row; // backwards
+			} else {
+				$l = ord(strtoupper($l)) -64;
+				if ($l>0 && $l<27) {
+					$col = $col + $l*pow(26,$rank);
+				} else {
+					return false;
+				}
+				$rank++;
+			} 
+		}
+
+		if ($WithRow) {
+			return array($col, intval($row));
+		} else {
+			return $col;
+		}
 
 	}
-
+	
 	/**
 	 * Return the reference of the cell, such as 'A10'.
+	 * @param integer $Col  The column number (first is 1)
+	 * @param integer $Row  The row    number (first is 1)
+	 * @param string  $Char (optional) The prefix for col and row num.
+	 * @return string
 	 */
-	function Misc_CellRef($Col, $Row) {
+	function Sheet_CellRef($Col, $Row, $Char = '') {
 		$r = '';
 		$x = $Col;
 		do {
@@ -2260,7 +2872,374 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 			$x = ($x - $c)/26;
 			$r = chr(65 + $c) . $r; // chr(65)='A'
 		} while ($x>0);
-		return $r.$Row;
+		return ($Char . $r . $Char . $Row);
+	}
+
+	/**
+	 * Return the info of a range definition.
+	 * Support both XLSX and ODS, range with or without sheet name, single cell range, full column range, full row range, absolute or relative cells, and multi-range.
+	 *
+	 * @param string $ref  The range reference.
+	 * 
+	 * XLSX :
+	 * 'the_sheet_name'!$A1
+	 * 'the_sheet_name'!$A$1:$B$2
+	 * 'the_sheet_name'!$A$1:$B$2,'the_sheet_name2'!$A$1:$B$2
+	 * ODS :
+	 * Sheet5.C9
+	 * $'the_sheet_name'.$A$1
+	 * $'the_sheet_name'.$A$1:.$B$2
+	 * $'the_sheet_name'.$A$1:'the_sheet_name'.$B$2
+	 *
+	 * forbidden chars in sheet name : XLSX = ": ' [  ]"  ; ODS = "[ ] * ? : / \ " or "'" as first char
+	 * simple quotes are doubled
+	 * the name can be delimited with "'" if there is any special char
+	 * cell separator : XLSX = '!' ; ODS = "." (can be the first char if sheet name is ommited)
+	 * range separator : XLSX = "," ; ODS = impossible
+	 *
+	 * @return array A recordset of info.
+	 */
+	function Sheet_GetRangeInfo($ref) {
+
+		$delim = "'"; // Sheet name delimitor
+		$rsep = ",";  // Range separator
+		
+		$result = array();
+
+		$i_end =  strlen($ref) -1;
+		$new = true;
+		// I's easier to read backward since the range definition always ends with a cell reference
+		for ($i = $i_end ; $i >= 0 ; $i--) {
+
+			// Initialize a new range info
+			if ($new) {
+				$sheet = '';
+				$cells = '';
+				$in_delim = false; // true if we are inside the delimited string
+				$is_cell = true;   // true if wee reading the cell part
+				$is_xslx = false;  // true if is seems to be an XLSX syntax 
+				$new = false;      // true if it is a new range defintion (XLSX ranges can be multi-range)
+			}
+			
+			// Read and interpret the char
+			$x = $ref[$i];
+			
+			if ($is_cell) {
+				// We are reading the cell part
+				if ( ($x === '!') || ($x === '.') ) {
+					// We meet a cell separator
+					$is_cell = false;
+					$is_xslx = ($x === '!');
+				} elseif ($x === $rsep) {
+					// We meet a range separator
+					$new = true;
+				} elseif ($x === $delim) {
+					// should never happen, but we can workaround this
+					$is_cell = false;
+					$sheet = $x;
+				} else {
+					$cells = $x . $cells;
+				}
+			} else {
+				// We are reading the sheet part
+				if ($in_delim) {
+					if ($x === $delim) {
+						if ( ($i > 0) && ($ref[$i -1] === $delim) ) {
+							// It's a double delim
+							$sheet = $x . $sheet;
+							$i--;
+						} else {
+							// It's a single delim. Note that the bound delim are not kept.
+							$in_delim = false;
+						}	
+					} else {
+						$sheet = $x . $sheet;
+					}
+				} else {
+					if ($x === $delim) {
+						$in_delim = true;
+					} elseif ($x === ':') {
+						// case of ODS with two cells
+						$cells = $x . $cells;
+						$is_cell = true;
+						$sheet = ''; // the sheet name can be repeated in the second cell with Database Range
+					} elseif ($x === $rsep) {
+						$new = true;
+					} else {
+						$sheet = $x . $sheet;
+					}
+				}
+			}
+
+			// Check for a new range info
+			if ( $new || ($i == 0) ) {
+				
+				// Clean up the sheet name
+				$sheet = trim($sheet, '$'); // ODS can ref can start with $ before the sheet name.
+				if (!$is_xslx) {
+					$sheet = htmlspecialchars_decode($sheet); // ODS only
+				}
+				
+				// pattern with all props
+				$info = array(
+					'sheet' => $sheet,
+					'cells' => $cells,
+					'err'   => false,
+					'cs'   => false,
+					'rs'   => false,
+					'ce'   => false,
+					're'   => false,
+					'single' => false,
+					'cfull' => false,
+					'rfull' => false,
+				);
+				
+				// Analyze the cells ref
+				$parts = explode(':', $cells);
+				foreach ($parts as $idx => $cell) {
+					$w = $this->Sheet_ColNum($cell, true);
+					if ($w === false) {
+						$info['err'] = "The range reference '{$cell}' is not recognized.";
+						$info['_ref'] = $ref; // for debuging
+					} else {
+						$ok = true;
+						if ($is_xslx) {
+							// we have to check that both col and row values have a $, otherwise the Excel syntaxe is not the same
+							// it is very curious : B8 => XFD1, C8 => A1, C$8 => A$8, $C8 => $C1 !!??
+							if ($cell[0] !== '$') {
+								$ok = false;
+							} elseif (($w[0] !== 0) && ($w[1] !== 0) && (substr_count($cell, '$') != 2)) {
+								$ok = false;
+							}
+						}
+						if ($ok) {
+							$z = ($idx === 0) ? 's' : 'e';
+							$info['c'.$z] = $w[0];
+							$info['r'.$z] = $w[1];
+						} else {
+							$info['err'] = "OpenTBS supports only absolute references in XLSX ranges.";
+							$info['_ref'] = $ref; // for debuging
+						}
+					}
+				}
+
+				// For facilities, endings should be available
+				if ( ($info['ce'] === false) && ($info['re'] === false) ) {
+					$info['ce'] = $info['cs'];
+					$info['re'] = $info['rs'];
+					$info['single'] = true;
+				}
+				
+				// Set the full row or column info
+				if ($info['cs'] === 0) {
+					$info['cs'] = 1;
+					$info['ce'] = PHP_INT_MAX;
+					$info['cfull'] = true;
+				}
+				if ($info['re'] === 0) {
+					$info['rs'] = 1;
+					$info['re'] = PHP_INT_MAX;
+					$info['rfull'] = true;
+				}
+				
+				$result[] = $info;
+				
+			}
+			
+		}
+		
+		return $result;
+		
+	}
+
+	/**
+	 * Visit all the cells of a range for get or set.
+	 *
+	 */
+	function Sheet_VisitCells($RangeRef, $Options, $Set) {
+		
+		// Retrieve options
+		if (!is_array($Options)) {
+			$Options = array();
+		}
+		$opt_header    = $this->getItem($Options, 'header', false);
+		$opt_noerr     = $this->getItem($Options, 'noerr', false);
+		$opt_rangeinfo = $this->getItem($Options, 'rangeinfo', false);
+		$opt_columns   = $this->getItem($Options, 'columns', false);
+		$opt_dbr       = $this->getItem($Options, 'del_blank_rows', false);
+		$opt_row_max   = $this->getItem($Options, 'row_max', false);
+		
+		// Get the type of contents
+		if ($this->ExtEquiv == 'ods') {
+			$isXlsx = false;
+		} elseif ($this->ExtEquiv == 'xlsx') {
+			$isXlsx = true;
+		} else {
+			// Not supported
+			return false;
+		}
+
+		if ($isXlsx) {
+			$this->MsExcel_RangeNamesInit();
+		} else {
+			$this->OpenDoc_RangeNamesInit();
+		}
+		
+		// Get range information
+		if (isset($this->OtbsSheetRangeNames[$RangeRef])) {
+			// Named range
+			$x = $this->OtbsSheetRangeNames[$RangeRef];
+		} else {
+			// Custom range definition
+			$x = $this->Sheet_GetRangeInfo($RangeRef);
+		}
+
+		if (isset($x[0])) {
+			$Range = $x[0];
+			if ($Range['err'] !== false) {
+				if ($opt_noerr) return false;
+				return $this->RaiseError("(VisitCells) The range reference '{$RangeRef}' cannot be found.");
+			}
+		} else {
+			if ($opt_noerr) return false;
+			return $this->RaiseError("(VisitCells) Unable to read the definition for the range named '{$RangeRef}'.");
+		}
+		if ($Range['err']) {
+			if ($opt_noerr) return false;
+			return $this->RaiseError("(VisitCells) Error for the range '{$RangeRef}' : " . $Range['err']);
+		}
+		
+		if ($opt_rangeinfo) {
+			return $Range;
+		}
+		
+		// Get sheet and range information
+		if ($isXlsx) {
+			$SheetLoc = $this->MsExcel_GetSheetLoc($Range);
+		} else {
+			$SheetLoc = $this->OpenDoc_GetSheetLoc($Range);
+			$this->OpenDoc_CoveredCells_Replace($SheetLoc, true);
+		}
+		if (!$SheetLoc) {
+			return false;
+		}
+
+		//var_export($SheetLoc->GetSrc()); exit;
+
+		$RowEl    = ($isXlsx) ? 'row' : 'table:table-row';
+		$CellEl   = ($isXlsx) ? 'c'   : 'table:table-cell';
+		$AttRowR  = ($isXlsx) ? false : 'table:number-rows-repeated';
+		$AttCellR = ($isXlsx) ? false : 'table:number-columns-repeated';
+		
+		// Visit all cells of the range
+		$ok = true;
+		$cell = false;
+		$result = array();
+		$row_idx = -1;
+		$col_idx = -1;
+		// Manage header
+		$hdr_ok = false; // true if $hdr_lst is set
+		$hdr_lst = array();
+		// Manage blank rows
+		$del_row = false; // Number of not empty values in the row
+		while ($ok && ($cell = $this->XML_GetNextCellLoc($SheetLoc, $Range, $cell, $RowEl, $CellEl, $AttRowR, $AttCellR, false)) ) {
+			if ($cell) {
+				
+				// Retrieve row and col indexes
+				$NewRow = ($cell->cellCol == $Range['cs']);
+				if ($NewRow) {
+					
+					// Manage header and colmun renaming
+					if ($row_idx === 0) {
+						if ($opt_header) {
+							$hdr_lst = $row;
+							$hdr_ok = true;
+							// Delete the row from the result
+							unset($result[0]);
+							$row_idx = -1;
+							$opt_header = false; // avoid a second pass
+						}
+						if (is_array($opt_columns)) {
+							if ($hdr_ok) {
+								$hdr_lst2 = array();
+								foreach ($hdr_lst as $i => $n) {
+									if (isset($opt_columns[$i])) {
+										$hdr_lst2[$i] = $opt_columns[$i];
+									} elseif (isset($opt_columns[$n])) {
+										$hdr_lst2[$i] = $opt_columns[$n];
+									}
+								}
+								$hdr_lst = $hdr_lst2;
+								unset($hdr_lst2);
+							} else {
+								$hdr_ok = true;
+								$hdr_lst = $opt_columns;
+							}
+							$opt_columns = false; // avoid a second pass
+						}
+					}
+					
+					// The cell is the first of a row
+					$col_idx = 0;
+					unset($row);
+					if (!$del_row) $row_idx++;
+					$del_row = $opt_dbr;
+					
+					if ($opt_row_max !== false) {
+						if ($row_idx >= $opt_row_max) {
+							$ok = false;
+						}
+					}
+
+					// Add a new empty row
+					if ($ok) {
+						$result[$row_idx] = array();
+						$row =& $result[$row_idx];
+					}
+
+				} else {
+					$col_idx++;
+				}
+				
+				// Get column key and check if we read the value
+				if ($hdr_ok) {
+					if (isset($hdr_lst[$col_idx])) {
+						$col_key = $hdr_lst[$col_idx];
+					} else {
+						$col_key = false;
+					}
+				} else {
+					$col_key = $col_idx;
+				}
+				
+				// Read the value
+				if ($ok && ($col_key !== false)) {
+					if ($isXlsx) {
+						$val = $this->MsExcel_GetCellValue($cell, $SheetLoc->xlsxFileIdx);
+					} else {
+						$val = $this->OpenDoc_GetCellValue($cell);
+					}
+					// Save the value
+					$row[$col_key] = $val;
+					// Manage blank rows
+					if ($del_row && (!is_null($val)) ) $del_row = false;
+					
+				}
+			
+			} else {
+				$ok = false;
+			}
+		}
+		
+		unset($row);
+		
+		// Delete the last inserted if needed
+		if ($del_row) {
+			unset($result[$row_idx]);
+		}
+		
+		return $result;
+		
 	}
 	
 	/**
@@ -2307,7 +3286,7 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 		if ($idx===false) return false;
 		
 		// prevent from XML injection
-		$NewCredit = htmlspecialchars($NewCredit);
+		$NewCredit = htmlspecialchars($NewCredit, ENT_NOQUOTES); // ENT_NOQUOTES because target is an element's content
 		
 		$Txt = $this->TbsStoreGet($idx, "EditCredits");
 		
@@ -2736,7 +3715,7 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 
 	}
 
-	function OpenXML_FirstPicAtt($Txt, $Pos, $Backward) {
+	function OpenXML_FirstPicType($Txt, $Pos, $Backward) {
 	// search the first image element in the given direction. Two types of image can be found. Return the value required for "att" parameter.
 		$TypeVml = '<v:imagedata ';
 		$TypeDml = '<a:blip ';
@@ -2777,9 +3756,9 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 		}
 
 		if ($t===$TypeVml) {
-			return 'v:imagedata#r:id';
+			return 'vml';
 		} elseif ($t===$TypeDml) {
-			return 'a:blip#r:embed';
+			return 'dml';
 		} else {
 			return false;
 		}
@@ -2868,7 +3847,7 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 					$x = $x[$n]; // name of the xml file
 					if (substr($x,-4)==='.xml') {
 						$x = substr($x,0,strlen($x)-4);
-						$this->OpenXmlCharts[$x] = array('idx'=>$i, 'clean'=>false, 'series'=>false);
+						$this->OpenXmlCharts[$x] = array('idx'=>$i, 'parent_idx'=>false, 'series'=>false);
 					}
 				}
 			}
@@ -2881,7 +3860,7 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 		if ($this->OpenXmlCharts===false) $this->OpenXML_ChartInit();
 
 		echo $nl;
-		echo $nl."Charts technically stored in the document:";
+		echo $nl."Charts technically stored in the document: (use command OPENTBS_CHART_INFO to get series's names and data)";
 		echo $nl."------------------------------------------";
 
 		// list of supported charts
@@ -2928,14 +3907,13 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 	 * Search for the series in the chart definition
 	 * @return mixed An Array if success, or a string if error.
 	 */
-	function OpenXML_ChartSeriesFound(&$Txt, $SeriesNameOrNum, $OnlyBounds=false) {
+	function OpenXML_ChartSeriesFound(&$Txt, $SeriesNameOrNum, $OnlyBounds) {
 
-		$IsNum = is_numeric($SeriesNameOrNum);
-		if ($IsNum) {
-			$p = strpos($Txt, '<c:order val="'.($SeriesNameOrNum-1).'"/>');
+		if (is_numeric($SeriesNameOrNum)) {
+			$p = strpos($Txt, '<c:order val="'.($SeriesNameOrNum-1).'"/>'); // position of the series
 			if ($p===false) return "Number of the series not found.";
 		} else {
-			$SeriesNameOrNum = htmlentities($SeriesNameOrNum);
+			$SeriesNameOrNum = htmlspecialchars($SeriesNameOrNum, ENT_NOQUOTES); // ENT_NOQUOTES because target is an element's content
 			$p = strpos($Txt, '>'.$SeriesNameOrNum.'<');
 			if ($p===false) return "Name of the series not found.";
 			$p++;
@@ -2943,58 +3921,61 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 
 		$res = array('p'=>$p);
 
+		$loc = clsTbsXmlLoc::FindElement($Txt, 'c:ser', $p, false);
+		if ($loc === false) {
+			return "XML entity not found.";
+		}
+		
+		$res['p'] = $loc->PosBeg;
+		$res['l'] = $loc->PosEnd - $loc->PosBeg + 1;
+
 		if ($OnlyBounds) {
-			if ($loc = clsTbsXmlLoc::FindElement($Txt, 'c:ser', $p, false)) {
-				$res['p'] = $loc->PosBeg;
-				$res['l'] = $loc->PosEnd - $loc->PosBeg + 1;
-				return $res;
-			} else {
-				return "XML entity not found.";
-			}
+			return $res;
 		}
 
-		// faster than clsTbsXmlLoc::FindElement
-		$end_tag = '</c:ser>';
-		$end = strpos($Txt, $end_tag, $p);
-		$len = $end + strlen($end_tag) - $p;
-		$res['l'] = $len;
-
-		$x = substr($Txt, $p, $len);
+		$src = substr($Txt, $res['p'], $res['l']);
+		
+		$this->OpenXML_ChartConvCacheToLiteral($src);
 
 		// Legend, may be absent
 		$p = 0;
-		if ($IsNum) {
-			$p1 = strpos($x, '<c:tx>');
-			if ($p1>0) {
-				$p2 = strpos($x, '</c:tx>', $p1);
-				$tag = '<c:v>';
-				$p1 = strpos($x, $tag, $p1);
-				if ( ($p1!==false) && ($p1<$p2) ) {
-					$p1 = $p1 + strlen($tag);
-					$p2 = strpos($x, '<', $p1);
-					$res['leg_p'] = $p1;
-					$res['leg_l'] = $p2 - $p1;
-					$p = $p2;
-				} 
-			}
-		} else {
-			$res['leg_p'] = 0;
-			$res['leg_l'] = strlen($SeriesNameOrNum);
+		$p1 = strpos($src, '<c:tx>');
+		if ($p1 > 0) {
+			$p2 = strpos($src, '</c:tx>', $p1);
+			$tag = '<c:v>';
+			$p1 = strpos($src, $tag, $p1);
+			if ( ($p1!==false) && ($p1<$p2) ) {
+				$p1 = $p1 + strlen($tag);
+				$p2 = strpos($src, '<', $p1);
+				$res['leg_p'] = $p1;
+				$res['leg_l'] = $p2 - $p1;
+				$p = $p2;
+			} 
 		}
 
 		// Data X & Y, we assume that (X or Category) are always first and (Y or Value) are always second
+		// Correspond elements are <c:cat> and <c:val> or <c:xVal> and <c:yVal>
 		// Some charts may not have categories, they cannot be merged :-(
-		for ($i=1; $i<=2; $i++) {
-			$p1 = strpos($x, '<c:ptCount ', $p);
+		for ($i = 1 ; $i <= 2 ; $i++) {
+			$p1 = strpos($src, '<c:ptCount ', $p);
 			if ($p1===false) return ($i==1) ? "categories or values not found." : "categories not found, check the chart to add categories.";
-			$p2 = strpos($x, 'Cache>', $p1); // the closing tag can be </c:numCache> or </c:strCache>
-			if ($p2===false) return "Cached data not found for categories or values.";
+			// Points elements can be childs of <c:numCache> or <c:strCache> (the most common, means the source is a reference to a XLSX range),
+			// but also <c:numLit> or <c:strLit> if the source is literal (rare, means the source is given has is in the chart, I've seen it possible only in XSLX)
+			$p2 = strpos($src, 'Lit>', $p1);
+			/* no need if cache values have bee previously converted into literal
+			if ($p2 === false) {
+				$p2 = strpos($src, 'Cache>', $p1);
+			}
+			*/
+			if ($p2===false) return "Neither Literal nor Cached data is found for categories or values.";
 			$p2 = $p2 - 7;
 			$res['point'.$i.'_p'] = $p1;
 			$res['point'.$i.'_l'] = $p2 - $p1;
 			$p = $p2;
 		}
-
+		
+		$res['src'] = $src;
+		
 		return $res;
 
 	}
@@ -3007,7 +3988,7 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 		
 		if ($this->OpenXmlCharts===false) $this->OpenXML_ChartInit();
 		
- 		$ref = ''.$ChartRef;
+		$ref = ''.$ChartRef;
 		// try with $ChartRef as number
 		if (!isset($this->OpenXmlCharts[$ref])) {
 			$ref = 'chart'.$ref;
@@ -3019,6 +4000,10 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 			if ($this->ExtEquiv=='pptx') {
 				// search in slides
 				$find = $this->MsPowerpoint_SearchInSlides(' title="'.$ChartRef.'"');
+				$idx = $find['idx'];
+			} elseif ($this->ExtEquiv=='xlsx') {
+				// search in drawings
+				$find = $this->TbsSearchInFiles('xl/drawings/*.xml', ' title="'.$ChartRef.'"', true);
 				$idx = $find['idx'];
 			} else {
 				$idx =$this->Ext_GetMainIdx();
@@ -3055,12 +4040,6 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 		$Txt = $this->TbsStoreGet($chart['idx'], 'ChartChangeSeries');
 		if ($Txt===false) return false;
 
-		if (!$chart['clean']) {
-			$this->OpenXML_ChartUnlinklDataSheet($chart['idx'], $Txt, $this->TBS->OtbsDeleteObsoleteChartData);
-			$chart['nbr'] = substr_count($Txt, '<c:ser>');
-			$chart['clean'] = true;
-		}
-
 		$Delete = ($NewValues===false);
 		if (is_array($SeriesNameOrNum)) return $this->RaiseError("(ChartChangeSeries) '$ChartRef' : The series reference is an array, a string or a number is expected. ".$ChartRef."'."); // usual mistake in arguments
 		$ser = $this->OpenXML_ChartSeriesFound($Txt, $SeriesNameOrNum, $Delete);
@@ -3071,7 +4050,6 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 			$Txt = substr_replace($Txt, '', $ser['p'], $ser['l']);
 
 		} else {
-
 
 			$point1 = ''; // category
 			$point2 = ''; // value
@@ -3097,7 +4075,7 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 					$x = $v;
 					$y = isset($val_lst[$k]) ? $val_lst[$k] : null;
 				}
-				// a category should not be missing otherwise it caption may not be display if the series is the first one
+				// a category should not be missing otherwise its caption may not be display if the series is the first one
 				$point1 .= '<c:pt idx="'.$i.'"><c:v>'.$x.'</c:v></c:pt>';
 				// a missing value is possible
 				if ( (!is_null($y)) && ($y!==false) && ($y!=='') && ($y!=='NULL') ) {
@@ -3108,15 +4086,18 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 			$point1 = '<c:ptCount val="'.$i.'"/>'.$point1;
 			$point2 = '<c:ptCount val="'.$i.'"/>'.$point2; // yes, the count is the same as point1 whenever missing values
 
-			// change info in reverse order of placement in order to avoid exention problems
-			$p = $ser['p'];
-			$Txt = substr_replace($Txt, $point2, $p+$ser['point2_p'], $ser['point2_l']);
-			$Txt = substr_replace($Txt, $point1, $p+$ser['point1_p'], $ser['point1_l']);
-			if ( (is_string($NewLegend)) && isset($ser['leg_p']) && ($ser['leg_p']<$ser['point1_p']) ) {
-				$NewLegend = htmlspecialchars($NewLegend);
-				$Txt = substr_replace($Txt, $NewLegend, $p+$ser['leg_p'], $ser['leg_l']);
+			// change info in reverse order of placement in order to avoid extention problems
+			$src = $ser['src'];
+			unset($ser['src']);
+			$src = substr_replace($src, $point2, $ser['point2_p'], $ser['point2_l']);
+			$src = substr_replace($src, $point1, $ser['point1_p'], $ser['point1_l']);
+			if ( is_string($NewLegend) && isset($ser['leg_p']) && ($ser['leg_p'] < $ser['point1_p']) ) {
+				$NewLegend = htmlspecialchars($NewLegend, ENT_NOQUOTES); // ENT_NOQUOTES because target is an element's content
+				$src = substr_replace($src, $NewLegend, $ser['leg_p'], $ser['leg_l']);
 			}
 
+			$Txt = substr_replace($Txt, $src, $ser['p'], $ser['l']);
+			
 		}
 
 		$this->TbsStorePut($chart['idx'], $Txt, true);
@@ -3148,8 +4129,16 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 				$name = false;
 				$title = false;
 				$descr = false;
-				$parent = clsTbsXmlLoc::FindStartTag($Txt, 'w:drawing', $t->PosBeg, false); // DOCX <w:drawing> can embeds <wp:inline> if inline with text, or <wp:anchor> otherwise
-				if ($parent===false) $parent = clsTbsXmlLoc::FindStartTag($Txt, 'p:nvGraphicFramePr', $t->PosBeg, false); // PPTX
+				// DOCX <w:drawing> can embeds <wp:inline> if inline with text, or <wp:anchor> otherwise                
+				$parent = clsTbsXmlLoc::FindStartTag($Txt, 'w:drawing', $t->PosBeg, false);
+				if ($parent===false) {
+					// PPTX
+					$parent = clsTbsXmlLoc::FindStartTag($Txt, 'p:nvGraphicFramePr', $t->PosBeg, false);
+				}
+				if ($parent===false) {
+					// XLSX
+					$parent = clsTbsXmlLoc::FindStartTag($Txt, 'xdr:nvGraphicFramePr', $t->PosBeg, false);
+				}
 				if ($parent!==false) {
 					$parent->FindEndTag();
 					$src = $parent->GetInnerSrc();
@@ -3174,36 +4163,175 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 	}
 
 	/**
-	 * Unlink and eventually delete the data sheet from the chart.
-	 * Each chart can have only 1 linked data sheet. It may be external or internal.
-	 * Each internal data sheet can be linked to only 1 chart. So it is safe to delete the internal data sheet.
-	 * If the chart stay linked to the old data sheet afert the merge, then the chart is automatically updated when the user attempt to edit it. This is not good.
-	 * If the data sheet is simply unlinked, the user can open the data sheet from Word of Powerpoint. But that will not change the chart.
-	 * If the data sheet is delete, the user cannot open the data sheet and cannot add a new data sheet. Data of the chart stay uneditable.
+	 * Convert all cache values into literal values.
 	 */
-	function OpenXML_ChartUnlinklDataSheet($idx, &$Txt, $Delete) {
-
-		if ($Delete) {
-			if ($loc = clsTbsXmlLoc::FindElement($Txt, 'c:externalData', 0)) {
-				// Delete the relationship
-				$rid = $loc->GetAttLazy('r:id');
-				if ($rid) {
-					$doc = $this->TbsGetFileName($idx);
-					$att = 'Id="' . $rid . '"';
-					$res = $this->OpenXML_Rels_DeleteRel($doc, $att, array('Target', 'TargetMode'));
-					// Delete the target file if embedded
-					if ($res && ($res['TargetMode'] != 'External')) {
-						$file = $this->OpenXML_GetAbsolutePath($res['Target'], $doc);
-						$this->FileReplace($file, false);
-					}
-				}
-				// Delete the element
-				$loc->Delete();
-			}
-		}
+	function OpenXML_ChartConvCacheToLiteral(&$Txt) {
 
 		// Unlink the data sheet by deleting references
 		$this->XML_DeleteElements($Txt, array('c:f'));
+		
+		$p = 0;
+		$ok = true;
+		while ( $ok  && (($loc = clsTbsXmlLoc::FindElement($Txt, 'c:tx', $p)) !== false) ) {
+			// The title of the series can be <c:strRef>, <c:v> or <c:rich>
+			// We try to replace <c:strRef> with <c:v>, without touching to <c:rich>.
+			if ($loc_ref = clsTbsXmlLoc::FindElement($loc, 'c:strRef', 0)) {
+				if ($loc_v = clsTbsXmlLoc::FindElement($loc_ref, 'c:v', 0)) {
+					$src = $loc_v->getSrc();
+					$loc->ReplaceInnerSrc($src);
+				} else {
+					$ok = false; // error met
+				}
+			}
+			$p = $loc->PosEnd;
+		}
+		
+		// Replace Reference values with Literal values
+		if ($ok) {
+			$this->XML_DeleteElements($Txt, array('c:numCache', 'c:strCache'), true);
+			$Txt = str_replace('c:strRef>', 'c:strLit>', $Txt); 
+			$Txt = str_replace('c:numRef>', 'c:numLit>', $Txt); 
+		}
+	
+	}
+
+	/**
+	 * Delete one, sveral or all categories in the chart.
+	 * @param string       $ChartRef       The chart reference.
+	 * @param string|array $del_categories An array of categories to delete, on the name of a category, all the keywork '*' that means all categories.
+	 * @param boolean      $no_err         Indicate if an error is return when a searched category is not found.
+	 * @return boolean Return true if all the searched categories are deleted.
+	 */
+	function OpenXML_ChartDelCategories($ChartRef, $del_categories, $no_err) {
+
+		$nb_series = 0;
+	
+		// Search the chart
+		$ref = $this->OpenXML_ChartFind($ChartRef, 'ChartChangeSeries');
+		if ($ref===false) return false;
+
+		// Open the chart doc
+		$chart =& $this->OpenXmlCharts[$ref];
+		$Txt = $this->TbsStoreGet($chart['idx'], 'ChartChangeSeries');
+		if ($Txt===false) return false;
+
+		// Prepare info for the search
+		$del_all = false;
+		if (is_string($del_categories)) {
+			if ($del_categories == '*') {
+				$del_all = true;
+				$del_categories = array();
+			} else {
+				$del_categories = array($del_categories);
+			}
+		}
+		$del_categories = array_flip($del_categories);
+		
+		// global info
+		$glob_remain_cat = $del_categories;
+		$glob_nb_del = 0;
+		
+		$ps = 0;
+		while ($ser = clsTbsXmlLoc::FindElement($Txt, 'c:ser', $ps, true)) {
+			
+			$cat = clsTbsXmlLoc::FindElement($ser, 'c:cat', 0, true);
+			
+			// Scan all categories
+			$pc = 0;
+			$new_idx = array(); // associative list of array(old_idx => new_idx)
+			$del_nb = 0;
+			while ($cpt = clsTbsXmlLoc::FindElement($cat, 'c:pt', $pc, true)) {
+				// Note: a <c:pt> element can be missing if the is no data. So the true position is given by attribute idx.
+				$idx = intval($cpt->GetAttLazy('idx'));
+				$del = false;
+				$cv = clsTbsXmlLoc::FindElement($cpt, 'c:v', 0, true);
+				$category = $cv->GetInnerSrc();
+				if ( $del_all || isset($del_categories[$category]) ) {
+					$cpt->Delete();
+					$cpt->UpdateParent(true);
+					$del = true;
+					unset($glob_remain_cat[$category]);
+				}
+				if ($del) {
+					$del_nb++;
+					$glob_nb_del++;
+					$new_idx[$idx] = false;
+					// do not change $pc
+				} else {
+					$new_idx[$idx] = $idx - $del_nb;
+					if ($del_nb > 0) {
+						// The category to delete is found. Next categories must have they idx updated.
+						$idx = intval($cpt->GetAttLazy('idx'));
+						$cpt->ReplaceAtt('idx', $new_idx[$idx]);
+						$cpt->UpdateParent(true);
+					}
+					$pc = $cpt->PosEnd;
+				}
+			}
+
+			if ($del_nb > 0) {
+				
+				// Update the count of categories. If not done then the chart displays an extra blank category.
+				if ($cnt = clsTbsXmlLoc::FindStartTag($cat, 'c:ptCount', 0, true)) {
+					$nb = intval($cnt->GetAttLazy('val'));
+					$cnt->ReplaceAtt('val', $nb - $del_nb);
+					$cnt->UpdateParent(true);
+				}
+				
+				// Delete the points that corresponf with the deleted categories
+				$del_val_nb = false;
+				$val = clsTbsXmlLoc::FindElement($ser, 'c:val', 0, true); // usually after <c:cat>
+				$pc = 0;
+				while ($cpt = clsTbsXmlLoc::FindElement($val, 'c:pt', $pc, true)) {
+					$idx = intval($cpt->GetAttLazy('idx'));
+					if ($new_idx[$idx] === false) {
+						$del_val_nb = true;
+						$cpt->Delete();
+						$cpt->UpdateParent(true);
+						// do not change $pc
+					} elseif ($new_idx[$idx] === $idx) {
+						// no change
+						$pc = $cpt->PosEnd;
+					} else {
+						// change the index
+						$cpt->ReplaceAtt('idx',$new_idx[$idx]);
+						$cpt->UpdateParent(true);
+						$pc = $cpt->PosEnd;
+					}
+				}
+				
+				if ($del_val_nb > 0) {
+					// Update the count of values. If not done then the chart displays an extra blank category.
+					if ($cnt = clsTbsXmlLoc::FindStartTag($val, 'c:ptCount', 0, true)) {
+						$nb = intval($cnt->GetAttLazy('val'));
+						$cnt->ReplaceAtt('val', $nb - $del_val_nb);
+						$cnt->UpdateParent(true);
+					}
+				}
+				
+			}
+			
+			$ps = $ser->PosEnd;
+			
+		}
+		
+		// Save the file if modified
+		if ($glob_nb_del > 0) {
+			$this->TbsStorePut($chart['idx'], $Txt, true);
+		}
+		
+		// Result of the function
+		if ( $del_all || (count($glob_remain_cat) == 0) ) {
+			// All searched categories are deleted
+			return true;
+		} else {
+			if ($no_err) {
+				return false;
+			} else {	
+				return $this->RaiseError("(ChartDelCategory) '$ChartRef' : unable to find categories '" . implode(', ', array_keys($glob_remain_cat)) . "' in the chart ".$ref.".");
+			}
+		}
+		
 	}
 
 	/**
@@ -3225,9 +4353,9 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 		$serials = array();
 		
 		$loop_conf = array(
-			'names' => array('parent' => 'c:tx',  'format' => false),
-			'cat'   => array('parent' => 'c:cat', 'format' => 'c:formatCode'),
-			'val'   => array('parent' => 'c:val', 'format' => 'c:formatCode'),
+			'names' => array('parent' => 'c:tx',  'format' => false), // name of the series
+			'cat'   => array('parent' => 'c:cat', 'format' => 'c:formatCode'), // categories of the series
+			'val'   => array('parent' => 'c:val', 'format' => 'c:formatCode'), // values of the series
 		);
 
 		// Loop
@@ -3245,7 +4373,7 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 							$res[$key . '_format'] = $format;
 						}
 					}
-					// Search items
+					// Search items. Works for both References or Literals values
 					// It is possible that a val item is missing for a cat idx
 					$items = array();
 					$loc_p = 0;
@@ -3308,7 +4436,7 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 
 		$Txt = $this->TbsStoreGet($idx, 'Excel SharedStrings');
 		if ($Txt===false) return false;
-		$this->TbsStorePut($idx, $Txt); // save for any further usage
+		$this->TbsStorePut($idx, $Txt); // save for any further usage (is this usefull ??)
 
 		$this->OpenXmlSharedStr = array();
 		$this->OpenXmlSharedSrc =& $this->TbsStoreLst[$idx]['src'];
@@ -3416,11 +4544,14 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 			$Delete = false;
 			if (isset($Loc->PrmPos[$Att])) {
 				// attribute found
-				$r = $Loc->PrmLst[$Att];
+				$a = $Loc->PrmLst[$Att];
 				if ($IsRow) {
-					$r = intval($r);
+					$r = intval($a);
 				} else {
-					$r = $this->Misc_ColNum($r, false);
+					$r = $this->Sheet_ColNum($a);
+					if ($r === false) {
+						return $this->RaiseError('(ConvertToRelative) Reference of cell \'' . $a . '\' cannot be recognized.');
+					}
 				}
 				$missing_nbr = $r - $item_num -1;
 				if ($missing_nbr<0) {
@@ -3528,12 +4659,12 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 			if (substr($Txt_Curr, 0 + $tag_pc, 1) == '/') {
 
 				// It's an empty item => Delete the item
-				$Txt_Done .= substr($Txt_Curr, $p);
+				$Txt_Done .= substr($Txt_Curr, 0 + $tag_pc + 2); // +2 is for the tail '/>'
 
 			} else {
 
 				// The item is not empty => replace attribute and delete the previous empty item in the same time
-				$ref = ($ParentRowNum===false) ? $item_num : $this->Misc_CellRef($item_num, $ParentRowNum);
+				$ref = ($ParentRowNum===false) ? $item_num : $this->Sheet_CellRef($item_num, $ParentRowNum);
 				$Txt_Curr = $rpl . $ref . '"' . substr($Txt_Curr, 0 + $tag_pc);
 				$rpl_nbr++;
 
@@ -3554,19 +4685,38 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 
 	}
 	
-	function MsExcel_DeleteFormulaResults(&$Txt) {
-	// In order to refresh the formula results when the merged XLSX is opened, then we delete all <v> elements having a formula.
-		$c_close = '</c>';
-		$p = 0;
-		while (($p=clsTinyButStrong::f_Xml_FindTagStart($Txt, 'f', true, $p, true, true))!==false) {
-			$c_p = strpos($Txt, $c_close, $p);
-			if ($c_p===false) return false; // error in the XML
-			$x_len0 = $c_p - $p;
-			$x = substr($Txt, $p, $x_len0);
-			$this->XML_DeleteElements($x, array('v'));
-			$Txt = substr_replace($Txt, $x, $p, $x_len0);
-			$p = $p + strlen($x);
+	/**
+	 * Cells with formulas also have a cached result (stored in the <v> element).
+	 * When Excel open a sheet, the cached result is displayed, not the actualized result.
+	 * We can add attribute ca="true" to the <f> element in order to have them actualized.
+	 * But this des not work well when the XLSX is opened with LibreOffice.
+	 * So the solid solution is to simply delete the cached result.
+	 *
+	 * Cached values are stored in an array so it can be retrived for Sheet_VisitCells()
+	 */
+	function MsExcel_DeleteFormulaResults($idx, &$Txt) {
+	
+		if (!isset($this->MsExcel_Formulas[$idx])) {
+			$this->MsExcel_Formulas[$idx] = array();
 		}
+		$formulas =& $this->MsExcel_Formulas[$idx];
+	
+		$p = 0;
+		while ( ($locF = clsTbsXmlLoc::FindElement($Txt, 'f', $p, true)) !== false ) {
+			$f = $locF->GetInnerSrc();
+			$p = $locF->PosEnd;
+			$v = null;
+			if ($locC = clsTbsXmlLoc::FindElement($Txt, 'c', $locF->PosBeg, false)) {
+				if ($locV = clsTbsXmlLoc::FindElement($locC, 'v', 0, true)) {
+					$v = $locV->GetInnerSrc();
+					$locV->Delete();
+					$locV->UpdateParent(true);
+				}
+				$p = $locC->PosEnd;
+			}
+			$formulas[$f] = $v;
+		}
+
 	}
 
 	/**
@@ -3720,12 +4870,12 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 			} else {
 				$t = $Value;
 			}
-			if (($t===-1) or ($t===false)) { // Date not recognized
+			if (($t===-1) || ($t===false)|| ($t===null)) { // Date not recognized
 				$Value = '';
 			} elseif ($t===943916400) { // Date to zero
 				$Value = '';
 			} else { // It's a date
-				$Value = ($t/86400.00)+25569; // unix: 1 means 01/01/1970, xls: 1 means 01/01/1900
+				$Value = ($t/86400.00)+25569; // unix: 1 means 01/01/1970, xlsx: 1 means 01/01/1900
 			}
 			break;
 		default:
@@ -3781,17 +4931,40 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 
 	}
 
-	function MsExcel_SheetGet($IdOrName, $bySheetId = false) {
+	/**
+	 * Return the sheet info corresponding to the name, number or internal id.
+	 * @param string|integer $IdOrName
+	 * @param array          $SearchBy    A list of search condition, in order. Supported items : 'name' , 'sheetId', 'num' 
+	 * @param boolean        $RaiseError  Set true if an error is raised if the sheet is not found.
+	 * @param object A special object. See MsExcel_SheetInit(). 
+	 */
+	function MsExcel_SheetGetConf($IdOrName, $SearchBy, $RaiseError) {
+		
 		$this->MsExcel_SheetInit();
+		
+		$by_name    = in_array('name',    $SearchBy, true);
+		$by_sheetId = in_array('sheetId', $SearchBy, true);
+		$by_num     = in_array('num',     $SearchBy, true);
+		
 		foreach($this->MsExcel_Sheets as $o) {
-			if ($o->name==$IdOrName) return $o;
-			if ($bySheetId) {
-				if ($o->sheetId==$IdOrName) return $o;
-			} else {
-				if ($o->num==$IdOrName) return $o;
+			// Check by order of search.
+			foreach ($SearchBy as $s) {
+				$ok = false;
+				$ok = $ok || ( ($s === 'name') && ($o->name == $IdOrName) );
+				$ok = $ok || ( ($s === 'sheetId') && ($o->sheetId == $IdOrName) );
+				$ok = $ok || ( ($s === 'num') && ($o->num == $IdOrName) );
+				if ($ok) {
+					return $o;
+				}
 			}
 		}
-		return $this->RaiseError("(MsExcel_SheetInit) The sheet '$IdOrName' is not found inside the Workbook. Try command OPENTBS_DEBUG_INFO to check all sheets inside the current Workbook.");
+		
+		if ($RaiseError) {
+			return $this->RaiseError("(MsExcel_SheetInit) The sheet '$IdOrName' is not found inside the Workbook. Try command OPENTBS_DEBUG_INFO to check all sheets inside the current Workbook.");
+		} else {
+			return false;
+		}
+		
 	}
 
 	/**
@@ -3922,6 +5095,113 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 		return $lst;
 	}
 
+	function MsExcel_RangeNamesInit() {
+		
+		if ($this->OtbsSheetRangeNames !== false) return;
+		
+		$this->OtbsSheetRangeNames = array();
+
+		// Get the workbook.xml contents
+		$idx = $this->FileGetIdx('xl/workbook.xml');
+		if ($idx===false) return;
+		$Txt = $this->TbsStoreGet($idx, 'RangeNamesInit'); // use the store, so the file will be available for editing if needed
+		if ($Txt===false) return false;
+		//$this->TbsStorePut($idx, $Txt);
+
+		$p = 0;
+		while ( $el = clsTbsXmlLoc::FindElement($Txt, 'definedName', $p, true) ) {
+			$name = $el->GetAttLazy('name'); // forbidden in range name : ", ', ' ', 
+			$ref = $el->GetInnerSrc();
+			$this->OtbsSheetRangeNames[$name] = $this->Sheet_GetRangeInfo($ref);
+			$p = $el->PosEnd;
+		}
+		
+	}
+
+	/**
+	 * Get the locator of the sheet element.
+	 * @param  array  $Range  The range information.
+	 * @return object A clsTbsXmlLoc locator of false if error.
+	 */
+	function MsExcel_GetSheetLoc($Range) {
+		
+		// Get the sheet content
+		if ($Range['sheet']) {
+			$o = $this->MsExcel_SheetGetConf($Range['sheet'], array('name'), true);
+			if ($o === false) return false;
+			$idx = $this->FileGetIdx('xl/'.$o->file);
+			$Txt = $this->TbsStoreGet($idx, 'MsExcel_GetSheetLoc');
+			if ($this->LastReadNotStored) {
+				$this->MsExcel_ConvertToRelative($Txt);
+			}
+		} else {
+			$Txt = $this->TBS->Source;
+			$idx = $this->TbsCurrIdx;
+		}
+		
+		$SheetLoc = clsTbsXmlLoc::FindElement($Txt, 'sheetData', 0, true);
+		$SheetLoc->xlsxFileIdx = $idx;
+		return $SheetLoc;
+		
+	}
+	
+	function MsExcel_GetCellValue($Loc, $fileIdx = -1) {
+		
+		$x = null;
+		
+		if ( $Loc->Exists && ($Loc->GetInnerStart() !== false) ) {
+			$type = $Loc->GetAttLazy('t');
+			$vtag = ($type === 'inlineStr') ? 't' : 'v';
+			if ($locV = clsTbsXmlLoc::FindElement($Loc, $vtag, 0, true)) {
+				$v = $locV->GetInnerSrc();
+			} else {
+				$v = false;
+				if ($locF = clsTbsXmlLoc::FindElement($Loc, 'f', 0, true)) {
+					if (isset($this->MsExcel_Formulas[$fileIdx])) {
+						$f = $locF->GetInnerSrc();
+						if (isset($this->MsExcel_Formulas[$fileIdx][$f])) {
+							$v = $this->MsExcel_Formulas[$fileIdx][$f];
+						}
+					}
+					if ($v === false) {
+						$x = "#OpenTBS: formula without cached result";
+					}
+				} else {
+					// it's valid to have no value
+				}
+			}
+			if ($v !== false) {
+				switch ($type) {
+				case 'b': // boolean: 0=false
+					$x = (boolean) $v; break;
+				case 's': // shared string
+					$x = $this->OpenXML_SharedStrings_GetVal($v);
+					$this->XML_DeleteElements($x, array('t'), true);
+					break;
+				case 'inlineStr': // inline string
+					$x = $v; break;
+				case 'str': // formula returning a string				
+					$x = $v; break;
+				case 'd': // date
+					$t = ($v-25569.0) * 86400.0; // unix: 1 means 01/01/1970, xlsx: 1 means 01/01/1900
+					$x = date('Y-m-d h:i:s', $t);
+					break;
+				case 'e': // error, example of value: #DIV/0!
+					$x = $v; break;
+				default: // false or 'n' => it's a number
+					if (strpos($v, '.') === false) {
+						$x = intval($v);
+					} else {
+						$x = floatval($v);
+					}
+				}
+			}
+		}
+		
+		return $x;
+		
+	}
+	
 	/**
 	 * Return the list of slides in the Ms Powerpoint presentation.
 	 * @param {boolean} $Master Trye to operate on master slides.
@@ -4193,10 +5473,12 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 
 	}
 
+	/**
+	 * Delete XML attributes relative to log of user modifications. Returns the number of deleted attributes.
+	 * In order to insert such information, MsWord does split TBS tags with XML elements.
+	 * After such attributes are deleted, we can concatenate duplicated XML elements.
+	 */
 	function MsWord_CleanRsID(&$Txt) {
-	/* Delete XML attributes relative to log of user modifications. Returns the number of deleted attributes.
-	In order to insert such information, MsWord does split TBS tags with XML elements.
-	After such attributes are deleted, we can concatenate duplicated XML elements. */
 
 		$rs_lst = array('w:rsidR', 'w:rsidRPr');
 
@@ -4258,71 +5540,89 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 		$wtc_len = strlen($wtc);
 
 		$preserve = 'xml:space="preserve"';
+		$preserve_len = strlen($preserve);
 
-		$nbr = 0;
+		$nb_tot = 0;
 		$wro_p = 0;
-		while ( ($wro_p=$this->XML_FoundTagStart($Txt,$wro,$wro_p))!==false ) { // next <w:r> tag
-			$wto_p = $this->XML_FoundTagStart($Txt,$wto,$wro_p); // next <w:t> tag
-			if ($wto_p===false) return false; // error in the structure of the <w:r> element
+		while ( ($wro_p = $this->XML_SearchTagForward($Txt, $wro, $wro_p)) !== false ) { // next <w:r> tag
+			$wto_p = $this->XML_SearchTagForward($Txt, $wto, $wro_p); // next <w:t> tag
+			if ($wto_p === false) return false; // error in the structure of the <w:r> element
 			$first = true;
-			$last_att = '';
-			$first_att = '';
+			$nb = 0; // number of duplicated layouts for the current text snippet
 			do {
 				$ok = false;
-				$wtc_p = $this->XML_FoundTagStart($Txt,$wtc,$wto_p); // next </w:t> tag
-				if ($wtc_p===false) return false;
-				$wrc_p = $this->XML_FoundTagStart($Txt,$wrc,$wro_p); // next </w:r> tag (only to check inclusion)
-				if ($wrc_p===false) return false;
-				if ( ($wto_p<$wrc_p) && ($wtc_p<$wrc_p) ) { // if the <w:t> is actually included in the <w:r> element
+				$wtc_p = $this->XML_SearchTagForward($Txt, $wtc, $wto_p); // next </w:t> tag
+				if ($wtc_p === false) return false;
+				$wrc_p = $this->XML_SearchTagForward($Txt, $wrc, $wro_p); // next </w:r> tag (only to check inclusion)
+				if ($wrc_p === false) return false;
+				if ( ($wto_p < $wrc_p) && ($wtc_p < $wrc_p) ) { // if the <w:t> is actually included in the <w:r> element
 					if ($first) {
-						// text that is concatenated and can be simplified
-						$superfluous = '</w:t></w:r>'.substr($Txt, $wro_p, ($wto_p+$wto_len)-$wro_p); // without the last symbol, like: '</w:t></w:r><w:r>....<w:t'
-						$superfluous = str_replace('<w:tab/>', '', $superfluous); // tabs must not be deleted between parts => they nt be in the superfluous string
-						$superfluous_len = strlen($superfluous);
+						// we build the xml that would be the duplicated layout if any
+						$p = strpos($Txt, '<', $wrc_p + $wrc_len);
+						$x = substr($Txt, $wtc_p, $p - $wtc_p); // '</w:t></w:r>   ' may include some linebreaks or spaces after the closing tags
+						$src_to_del = $x . substr($Txt, $wro_p, ($wto_p + $wto_len) - $wro_p); // without the last symbol, like: '</w:t></w:r><w:r>....<w:t'
+						$src_to_del = str_replace('<w:tab/>', '', $src_to_del); // tabs must not be deleted between parts => they nt be in the superfluous string
+						$src_to_del_len = strlen($src_to_del);
 						$first = false;
-						$p_first_att = $wto_p+$wto_len;
-						$p =  strpos($Txt, '>', $wto_p);
-						if ($p!==false) $first_att = substr($Txt, $p_first_att, $p-$p_first_att);
 					}
-					// if the <w:r> layout is the same than the next <w:r>, then we join them
-					$p_att = $wtc_p + $superfluous_len;
-					$x = substr($Txt, $p_att, 1); // must be ' ' or '>' if the string is the superfluous AND the <w:t> tag has or not attributes
-					if ( (($x===' ') || ($x==='>')) && (substr($Txt, $wtc_p, $superfluous_len)===$superfluous) ) {
-						$p_end = strpos($Txt, '>', $wtc_p+$superfluous_len); //
-						if ($p_end===false) return false; // error in the structure of the <w:t> tag
-						$last_att = substr($Txt,$p_att,$p_end-$p_att);
-						$Txt = substr_replace($Txt, '', $wtc_p, $p_end-$wtc_p+1); // delete superfluous part + <w:t> attributes
-						$nbr++;
+					// if the following source is a duplicated layout then we delete it by joining the <w:r> elements.
+					$p_att = $wtc_p + $src_to_del_len;
+					$x = substr($Txt, $p_att, 1); // help to optimize the check because if it's a duplicated layout, the char after is the end of the '<w:t' element.
+					if ( (($x === ' ') || ($x === '>')) && (substr($Txt, $wtc_p, $src_to_del_len)===$src_to_del) ) {
+						$p_end = strpos($Txt, '>', $p_att); //
+						if ($p_end === false) return false; // error in the structure of the <w:t> tag
+						$Txt = substr_replace($Txt, '', $wtc_p, $p_end - $wtc_p + 1); // delete superfluous part + <w:t> attributes
+						$nb_tot++;
+						$nb++;
 						$ok = true;
 					}
 				}
 			} while ($ok);
 
-			// Recover the 'preserve' attribute if the last join element was having it. We check also the first one because the attribute must not be twice.
-			if ( ($last_att!=='') && (strpos($first_att, $preserve)===false)  && (strpos($last_att, $preserve)!==false) ) {
-				$Txt = substr_replace($Txt, ' '.$preserve, $p_first_att, 0);
+			// Add or delete the attribute « xml:space="preserve" » that must be set if there is a space before of after the text
+			if ($nb > 0) {
+				$with_space = false;
+				if ( substr($Txt, $wtc_p - 1, 1) === ' ') $with_space = true;
+				$p_end = strpos($Txt, '>', $wto_p); // first char of the text
+				if ( substr($Txt, $p_end + 1, 1) === ' ') $with_space = true;
+				$src = substr($Txt, $wto_p, $p_end - $wto_p + 1);
+				$p = strpos($src, $preserve);
+				if ( $with_space && ($p === false) ) {
+					// add the attribute
+					$Txt = substr_replace($Txt, ' ' . $preserve, $p_end, 0);
+				} elseif ( (!$with_space) && ($p !== false) ) {
+					// delete the attribute
+					$Txt = substr_replace($Txt, '', $wto_p + $p -1, $preserve_len + 1); // delete the attribut with the space before it
+				}
 			}
 
 			$wro_p = $wro_p + $wro_len;
 
 		}
 
-		return $nbr; // number of replacements
+		return $nb_tot; // number of total replacements
 
 	}
 
 	/**
 	 * Prevent from the problem of missing spaces when calling ->MsWord_CleanRsID() or under certain merging circumstances.
 	 * Replace attribute xml:space="preserve" used in <w:t>, with the same attribute in <w:document>.
-	 * This trick works for MsWord 2007, 2010 but is undocumented. It may be desabled by default in a next version.
-	 * LibreOffice does ignore this attribute in both <w:t> and <w:document>.
+	 * This trick use an attribute of <w:document> element that works for all MsWord versions (last tested is 2019) but is undocumented.
+	 * So it may may be disabled by default in a next version.
+	 * LibreOffice does ignore this attribute in <w:document>.
 	 */
 	function MsWord_CleanSpacePreserve(&$Txt) {
+		
 		$XmlLoc = clsTbsXmlLoc::FindStartTag($Txt, 'w:document', 0);
+
+		// Checks
 		if ($XmlLoc===false) return;
 		if ($XmlLoc->GetAttLazy('xml:space') === 'preserve') return;
 		
-		$Txt = str_replace(' xml:space="preserve"', '', $Txt); // not mendatory but cleanner and save space
+		// We delete the attribute on <w:t> elements. This is not not mendatory but cleanner and save space.
+		// Canceled because needed for LibreOffice
+		// $Txt = str_replace(' xml:space="preserve"', '', $Txt);
+		
 		$XmlLoc->ReplaceAtt('xml:space', 'preserve', true);
 
 	}
@@ -4420,6 +5720,30 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 
 		$p = $loc->PosBeg;
 		if ($Forward) $p--; // if it's forward, we stop the block before the paragraph with page-break
+		return $p;
+		
+	}
+
+	// Alias of block: 'tbs:draw'
+	function MsWord_GetDraw($Tag, $Txt, $Pos, $Forward, $LevelStop) {
+		
+		$tags = array('mc:AlternateContent', 'w:r');
+		
+		$p = $Pos;
+		
+		if ($Forward) {
+			foreach ($tags as $tag) {
+				$p = strpos($Txt, '</' . $tag . '>', $p);
+				if ($p === false) return false;
+			}
+		} else {
+			foreach ($tags as $tag) {
+				$loc = clsTbsXmlLoc::FindStartTag($Txt, $tag, $p, false);
+				if ($loc === false) return false;
+				$p = $loc->PosBeg;
+			}
+		}
+		
 		return $p;
 		
 	}
@@ -4943,6 +6267,127 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 
 	}
 
+	function OpenDoc_RangeNamesInit() {
+		
+		if ($this->OtbsSheetRangeNames !== false) return;
+		
+		$this->OtbsSheetRangeNames = array();
+
+		// Get the content.xml contents
+		$idx = $this->FileGetIdx('content.xml');
+		if ($idx===false) return;
+		$Txt = $this->TbsStoreGet($idx, 'RangeNamesInit'); // use the store, so the file will be available for editing if needed
+		if ($Txt===false) return false;
+		//$this->TbsStorePut($idx, $Txt);
+
+		// Sheet ranges
+		$p = 0;
+		while ( $el = clsTbsXmlLoc::FindElement($Txt, 'table:named-range', $p, true) ) {
+			$name = $el->GetAttLazy('table:name');
+			$ref  = $el->GetAttLazy('table:cell-range-address');
+			if ($ref === false) {
+				$ref  = $el->GetAttLazy('table:base-cell-address'); // can be a single cell reference
+			}
+			$this->OtbsSheetRangeNames[$name] = $this->Sheet_GetRangeInfo($ref);
+			$p = $el->PosEnd;
+		}
+
+		// Database ranges
+		$p = 0;
+		while ( $el = clsTbsXmlLoc::FindElement($Txt, 'table:database-range', $p, true) ) {
+			$name = $el->GetAttLazy('table:name');
+			// A Database Range can have the same name as a Sheet Range. Priority to the Sheet Range.
+			if (!isset($this->OtbsSheetRangeNames[$name])) {
+				$ref  = $el->GetAttLazy('table:target-range-address');
+				$this->OtbsSheetRangeNames[$name] = $this->Sheet_GetRangeInfo($ref);
+			}
+			$p = $el->PosEnd;
+		}
+		
+	}
+
+	/**
+	 * Get the locator of the sheet element.
+	 * @param  array  $Range  The range information.
+	 * @return object A clsTbsXmlLoc locator of false if error.
+	 */
+	function OpenDoc_GetSheetLoc($Range) {
+		
+		$idx = $this->FileGetIdx('content.xml');
+		$Txt = $this->TbsStoreGet($idx, 'OpenDoc_GetSheetLoc');
+
+		// Find the sheet
+		if ($Range['sheet']) {
+			// Find the named sheet
+			$pos = 0;
+			$cont = true;
+			while ($cont) {
+				if ($SheetLoc = clsTbsXmlLoc::FindStartTag($Txt, 'table:table', $pos, true)) {
+					if ($SheetLoc->GetAttLazy('table:name') === $Range['sheet']) {
+						$SheetLoc->FindEndTag();
+						
+						$cont = false;
+					} else {
+						$pos = $SheetLoc->PosEnd;
+					}
+				} else {
+					$cont = false;
+				}
+			}
+		} else {
+			// Get the first sheet
+			$SheetLoc = clsTbsXmlLoc::FindElement($Txt, 'table:table', 0, true);
+		}
+
+
+		return $SheetLoc;
+		
+	}
+
+	function OpenDoc_GetCellValue($Loc) {
+		
+		$x = null;
+		
+		if ( $Loc->Exists && ($Loc->GetInnerStart() !== false) ) {
+			$type = $Loc->GetAttLazy('office:value-type');
+			if ($type === 'string') {
+				// errors are in this case, but with attribute « calcext:value-type="error" »
+				if ($z = clsTbsXmlLoc::FindElement($Loc, 'text:p', 0, true)) {
+					$x = $z->GetInnerSrc();
+				}
+			} elseif ($type === 'time') {
+				$z = $Loc->GetAttLazy('office:time-value');
+				if ($z !== false) {
+					// 'PT12H23M00S', 'P' means period
+					$x = $z;
+				}
+			} elseif ($type === 'date') {
+				$z = $Loc->GetAttLazy('office:date-value');
+				if ($z !== false) {
+					// Date or DateTime quite ISO 8601
+					// '2019-04-06', '2018-12-11T11:45:00'
+					$x = $z;
+				}
+			} elseif ($type === 'boolean') {
+				$z = $Loc->GetAttLazy('office:boolean-value');
+				if ($z === 'true') {
+					$x = true;
+				} elseif ($x === 'false') {
+					$z = false;
+				}
+			} else {
+				// float, percentage, currency
+				$z = $Loc->GetAttLazy('office:value');
+				if ($z !== false) {
+					$x = floatval($z);
+				}
+			}
+		}
+		
+		return $x;
+		
+	}
+	
 	// Feed $Styles with styles found in $Txt
 	function OpenDoc_StylesFeed(&$Styles, $Txt) {
 		$p = 0;
@@ -5032,7 +6477,7 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 	function OpenDoc_GetDraw($Tag, $Txt, $Pos, $Forward, $LevelStop) {
 		return $this->XML_BlockAlias_Prefix('draw:', $Txt, $Pos, $Forward, $LevelStop);
 	}
-
+	
 	/**
 	 * Find a chart in the template by its reference.
 	 * Return an array of technical information about the sub-file.
@@ -5040,7 +6485,7 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 	function OpenDoc_ChartFind($ChartRef, &$Txt, $ErrTitle) {
 		
 		if ($this->OpenDocCharts===false) $this->OpenDoc_ChartInit();
-
+		
 		// Find the chart
 		if (is_numeric($ChartRef)) {
 			$ChartCaption = 'number '.$ChartRef;
@@ -5049,7 +6494,7 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 		} else {
 			$ChartCaption = 'with title "'.$ChartRef.'"';
 			$idx = false;
-			$x = htmlspecialchars($ChartRef);
+			$x = htmlspecialchars($ChartRef, ENT_NOQUOTES); // ENT_NOQUOTES because target is an element's content
 			foreach($this->OpenDocCharts as $i=>$c) {
 				if ($c['title']==$x) $idx = $i;
 			}
@@ -5104,13 +6549,17 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 
 		if ($NewLegend!==false) $this->OpenDoc_ChartRenameSeries($Txt, $s_info, $NewLegend);
 
+		if ($s_info['local']) {
+			$this->OpenDoc_ChartUnlinkSeries($Txt, $chart, $s_info);
+		}
+		
 		// simplified variables
-		$col_cat  = $chart['col_cat']; // column Category (always 1)
-		$col_nbr  = $chart['col_nbr']; // number of columns
-		$s_col    = $s_info['cols'][0];  // first column of the series
-		$s_col_nbr = count($s_info['cols']);
-		$s_colend  = $s_col + $s_col_nbr - 1;  // last column of the series
-		$s_use_cat = (count($s_info['cols'])==1); // true is the series uses the column Category
+		$col_cat   = $chart['series_cat_col']; // column Category (always 0)
+		$col_nb    = $chart['tbl_col_nb']; // number of columns
+		$s_col_deb = min($s_info['used_cols']);  // first data column of the series
+		$s_col_nb  = count($s_info['used_cols']);
+		$s_col_end = $s_col_deb + $s_col_nb - 1;  // last column of the series
+		$s_use_cat = (count($s_info['used_cols'])==1); // true if the series uses the column Category
 
 		// Force syntax of data
 		if (!is_array($NewValues)) {
@@ -5129,21 +6578,21 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 		}
 		unset($NewValues);
 
-		// Scann all rows for changing cells
+		// Scann all rows (=categories) for changing cells
 		$elData = clsTbsXmlLoc::FindElement($Txt, 'table:table-rows', 0);
 		$p_row = 0;
 		while (($elRow=clsTbsXmlLoc::FindElement($elData, 'table:table-row', $p_row))!==false) {
 			$p_cell = 0;
 			$category = false;
 			$data_r = false;
-			for ($i=1; $i<=$s_colend; $i++) {
+			for ($i = 0 ; $i <= $s_col_end ; $i++) {
 				if ($elCell = clsTbsXmlLoc::FindElement($elRow, 'table:table-cell', $p_cell)) {
-					if ($i==$col_cat) {
+					if ($i == $col_cat) {
 						// Category
-						if ($elP = clsTbsXmlLoc::FindElement($elCell, 'text:p', 0)) {
-							$category = $elP->GetInnerSrc();
+						if ($el = clsTbsXmlLoc::FindElement($elCell, 'text:p', 0)) {
+							$category = $el->GetInnerSrc();
 						}
-					} elseif ($i>=$s_col) {
+					} elseif ($i >= $s_col_deb) {
 						// Change the value
 						$x = 'NaN'; // default value
 						if ($s_use_cat) {
@@ -5152,22 +6601,27 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 								unset($data[$category]); // delete the category in order to keep only unused
 							}
 						} else {
-							$val_idx = $i - $s_col;
+							$val_idx = $i - $s_col_deb;
 							if ($data_r===false) $data_r = array_shift($data); // (may return null) delete the row in order to keep only unused
 							if ( (!is_null($data_r)) && isset($data_r[$val_idx])) $x = $data_r[$val_idx];
 						}
 						if ( ($x===false) || is_null($x) ) $x = 'NaN';
 						$elCell->ReplaceAtt('office:value', $x);
 						// Delete the cached legend
-						if ($elP = clsTbsXmlLoc::FindElement($elCell, 'text:p', 0)) {
-							$elP->ReplaceSrc('');
-							$elP->UpdateParent(); // update $elCell source
+						if ($el = clsTbsXmlLoc::FindElement($elCell, 'text:p', 0)) {
+							$el->ReplaceSrc('');
+							$el->UpdateParent(); // update $elCell source
+						}
+						// Delete reference to worksheet
+						if ($el = clsTbsXmlLoc::FindElement($elCell, 'draw:g', 0)) {
+							$el->ReplaceSrc('');
+							$el->UpdateParent(); // update $elCell source
 						}
 						$elCell->UpdateParent(); // update $elRow source
 					}
 					$p_cell = $elCell->PosEnd;
 				} else {
-					$i = $s_colend+1; // ends the loops
+					$i = $s_col_end + 1; // ends the loops
 				}
 			}
 			$elRow->UpdateParent(); // update $elData source
@@ -5175,22 +6629,24 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 		}
 
 		// Add unused data
+		// TODO : we should update the category range in <chart:categories> but LibreOffice seems to not care about it.
 		$x = '';
 		$x_nan = '<table:table-cell office:value-type="float" office:value="NaN"></table:table-cell>';
 		foreach ($data as $cat=>$val) {
 			$x .= '<table:table-row>';
 			if ($s_use_cat) $val = array($val);
-			for ($i=1; $i<=$col_nbr; $i++) {
-				if ( ($s_col<=$i) && ($i<=$s_colend) ) {
-					$val_idx = $i - $s_col;
+			for ($i = 0 ; $i <= $col_nb -1 ; $i++) {
+				if ( ($s_col_deb <= $i) && ($i <= $s_col_end) ) {
+					$val_idx = $i - $s_col_deb;
 					if (isset($val[$val_idx])) {
 						$x .= '<table:table-cell office:value-type="float" office:value="'.$val[$val_idx].'"></table:table-cell>';
 					} else {
 						$x .= $x_nan;
 					}
 				} else {
-					if ($s_use_cat && ($i==$col_cat) ) {
-						$x .= '<table:table-cell office:value-type="string"><text:p>'.htmlspecialchars($cat).'</text:p></table:table-cell>';
+					if ($s_use_cat && ($i == $col_cat) ) {
+						// ENT_NOQUOTES because target is an element's content
+						$x .= '<table:table-cell office:value-type="string"><text:p>'.htmlspecialchars($cat, ENT_NOQUOTES).'</text:p></table:table-cell>';
 					} else {
 						$x .= $x_nan;
 					}
@@ -5205,7 +6661,7 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 		$this->TbsStorePut($chart['file_idx'], $Txt);
 
 	}
-
+	
 	/**
 	 * Look for all chart in the document, and store information.
 	 */
@@ -5236,7 +6692,6 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 					if (substr($href,0,2)=='./') $href = substr($href, 2);
 					if ( is_string($img_href) && (substr($img_href,0,2)=='./') ) $img_href = substr($img_href, 2);
 					$this->OpenDocCharts[] = array('href'=>$href, 'title'=>$title, 'img_href'=>$img_href, 'img_src'=>$img_src, 'to_clear'=> ($img_href!==false) );
-
 				}
 			}
 			$p = $drEl->PosEnd;
@@ -5245,12 +6700,20 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 		
 	}
 
+	/**
+	 * Clear some of the chart informations :
+	 * - Delete the picture of the chart which is used as a snapshot.
+	 */
 	function OpenDoc_ChartClear(&$chart) {
 
 		$chart['to_clear'] = false;
-
+		
 		// Delete the file in the archive
-		$this->FileReplace($chart['img_href'], false);
+		$idx = $this->FileGetIdx($chart['img_href']);
+		// One test with ODS had a referenced picture that did not exist in the archive.
+		if ($idx !== false) {
+			$this->FileReplace($idx, false);
+		}
 
 		// Delete the element in the main file
 		$main = $this->Ext_GetMainIdx();
@@ -5279,99 +6742,273 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 		// Find series declarations
 		$p = 0;
 		$s_idx = 0;
-		$series = array();
-		$cols = array(); // all columns attached to a series
-		$cols_name = array();
-		while($elSeries = clsTbsXmlLoc::FindElement($Txt, 'chart:series', $p)) {
-			$s_cols = array();
-			// Column of main value
-			$col = $this->OpenDoc_ChartFindCol($cols, $elSeries, 'chart:values-cell-range-address', $s_idx);
-			$s_cols[$col] = true;
-			// Column's num that contains the name of the series
-			$col_name = $this->OpenDoc_ChartFindCol($cols, $elSeries, 'chart:label-cell-address', $s_idx);
+		$series = array();	
+		while ($elSeries = clsTbsXmlLoc::FindElement($Txt, 'chart:series', $p)) {
+			
 			// List of column's nums for other values
+			$used_refs   = array();
+			$used_refs[] = $elSeries->GetAttLazy('chart:values-cell-range-address');
+
 			$src = $elSeries->GetInnerSrc();
 			$p2 = 0;
-			while($elDom = clsTbsXmlLoc::FindStartTag($src, 'chart:domain', $p2)) {
-				$col = $this->OpenDoc_ChartFindCol($cols, $elDom, 'table:cell-range-address', $s_idx);
-				$s_cols[$col] = true;
+			// <chart:domain> is used by type of charts: scatter, bubble, surface inorder to save X and Y values.
+			// It may have 0, 1 or 2 <chart:domain> entity in each series. 1 entity means X is the num order of the row, and Y is the column given by the domain.
+			while ($elDom = clsTbsXmlLoc::FindStartTag($src, 'chart:domain', $p2)) {
+				$att = $elDom->GetAttLazy('table:cell-range-address');
+				if ($att) {
+					$used_refs[] = $att;
+				}
 				$p2 = $elDom->PosEnd;
 			}
-			// rearrange col numbers
-			ksort($s_cols);
-			$s_cols = array_keys($s_cols); // nedded for having first col on index 0
+			
 			// Attribute to re-find the series
-			$ref = $elSeries->GetAttLazy('chart:label-cell-address');
+			$label_ref = $elSeries->GetAttLazy('chart:label-cell-address');
+			
 			// Add the series
 			$series[$s_idx] = array(
-				'name' => false, // name of the series
-				'col_name' => $col_name,
-				'cols' => $s_cols,
-				'ref' => $ref,
+				'name'      => false, // name of the series
+				'name_col'  => false, // colmun index for the name of the series (always on first row)
+				'val_col'   => false, // column index for the values
+				'used_cols' => false, // list of column indexes in the table that are used by the series
+				'used_refs' => $used_refs, // list of ref usde by the series, (0] is always for values
+				'label_ref' => $label_ref,
+				'local'     => true, // indicate if data is stored in the local table (flase means linked to cells)
 			);
-			$cols_name[$col_name] = $s_idx;
 			$p = $elSeries->PosEnd;
 			$s_idx++;
 		}
-		$chart['cols'] = $cols;
 
 		// Column of categories
-		$col_cat = false;
+		$series_cat_ref = false;
 		$elCat = clsTbsXmlLoc::FindStartTag($Txt, 'chart:categories', 0);
 		if ($elCat!==false) {
-			$att = $elCat->GetAttLazy('table:cell-range-address');
-			$col_cat = $this->Misc_ColNum($att, true); // the column of categories is always #1
+			$series_cat_ref = $elCat->GetAttLazy('table:cell-range-address');
 		}
-		$chart['col_cat'] = $col_cat;
 
+		$elTbl = clsTbsXmlLoc::FindStartTag($Txt, 'table:table', 0);
+		if ($elTbl===false) return $this->RaiseError("(ChartFindSeries) : unable to found the local table in the chart ".$this->_ChartCaption.".");
+		$tbl_name = $elTbl->GetAttLazy('table:name');
 
-		// Brows headers columns
-		$elHeaders = clsTbsXmlLoc::FindElement($Txt, 'table:table-header-rows', 0);
-		if ($elHeaders===false) return $this->RaiseError("(ChartFindSeries) : unable to found the series names in the chart ".$this->_ChartCaption.".");
+		// Info in the table
+		$tbl_columns = array();
+		$tbl_cat_ref = '';
 		$p = 0;
-		$col_num = 0;
-		while (($elCell=clsTbsXmlLoc::FindElement($elHeaders, 'table:table-cell', $p))!==false) {
-			$col_num++;
-			if (isset($cols_name[$col_num])) {
-				$elP = clsTbsXmlLoc::FindElement($elCell, 'text:p', 0);
-				$name = ($elP===false) ? '' : $elP->GetInnerSrc();
-				$s_idx = $cols_name[$col_num];
-				$series[$s_idx]['name'] = $name;
+
+		// Browse headers columns
+		$elRow = clsTbsXmlLoc::FindElement($Txt, 'table:table-header-rows', $elTbl->PosBeg);
+		if ($elRow === false) return $this->RaiseError("(ChartFindSeries) : unable to found the header row in the chart ".$this->_ChartCaption.".");
+
+		$col_idx = -1;
+		while (($elCell = clsTbsXmlLoc::FindElement($elRow, 'table:table-cell', $p))!==false) {
+			$col_idx++;
+			// Text in the cell
+			$el = clsTbsXmlLoc::FindElement($elCell, 'text:p', 0);
+			$name = ($el===false) ? '' : $el->GetInnerSrc();
+			// Ref in the cell
+			$el = clsTbsXmlLoc::FindElement($elCell, 'svg:desc', 0);
+			$label_ref  = ($el===false) ? false : $el->GetInnerSrc();
+			// Series info
+			$tbl_columns[$col_idx] = array('name' => $name, 'label_ref' => $label_ref, 'val_ref' => false);
+			$p = $elCell->PosEnd;
+		}
+		
+		// If the chart is link to a worksheet then the first row contains refrences to the cells
+		// Browse first row
+		$elRow = clsTbsXmlLoc::FindElement($Txt, 'table:table-row', $elRow->PosEnd);
+		if ($elRow === false) return $this->RaiseError("(ChartFindSeries) : unable to found the first data row in the chart ".$this->_ChartCaption.".");
+
+		$tbl_cat_ref = false;
+		$col_idx = -1;
+		$p = 0;
+		while (($elCell = clsTbsXmlLoc::FindElement($elRow, 'table:table-cell', $p))!==false) {
+			$col_idx++;
+			// Ref in the cell.
+			$el = clsTbsXmlLoc::FindElement($elCell, 'svg:desc', 0);
+			if ($el !== false) {
+				if ($col_idx == 0) {
+					$tbl_cat_ref = $el->GetInnerSrc();
+				} else {
+					//
+					$tbl_columns[$col_idx]['val_ref'] = $el->GetInnerSrc();
+				}
 			}
 			$p = $elCell->PosEnd;
 		}
-		$chart['series'] = $series;
-		$chart['col_nbr'] = $col_num;
+		
+		// Experimentally first colmun is for categories, and then for each series it is somain cols first and then val col.
+		$def_col_idx = 0;
 
+		// Match info between series info and the table
+		foreach ($series as $ser_idx => $info) {
+			
+			$def_col_idx = $def_col_idx + count($info['used_refs']);
+
+			// Name of the series
+			$col_idx = $this->OpenDoc_FirstColIdx($info['label_ref'], $tbl_name, $def_col_idx);
+			$info['name_col'] = $col_idx;
+			if (isset($tbl_columns[$col_idx])) {
+				$info['name'] = $tbl_columns[$col_idx]['name'];
+			}
+			
+			// The colmun for values is supposed to be the first column used for values in the series
+			$info['used_cols'] = array();
+			foreach ($info['used_refs'] as $idx => $ref) {
+				$col_idx = $this->OpenDoc_FirstColIdx($ref, $tbl_name, ($def_col_idx - $idx));
+				if ($col_idx === false) {
+					$info['local'] = false;
+					$col_idx = ($def_col_idx - $idx);
+				}
+				if ($idx === 0) {
+					$info['val_col'] = $col_idx;
+				}
+				$info['used_cols'][] = $col_idx;
+			}
+			
+			$series[$ser_idx] = $info;
+		}
+		
+		// Save info
+		$chart['series']         = $series;
+		$chart['series_cat_ref'] = $series_cat_ref;
+		$chart['series_cat_col'] = $this->OpenDoc_FirstColIdx($series_cat_ref, $tbl_name, 0);
+		$chart['tbl_name']    = $tbl_name;
+		$chart['tbl_col_nb']  = count($tbl_columns);
+		$chart['tbl_cat_ref'] = $tbl_cat_ref;
+		$chart['tbl_columns'] = $tbl_columns;
+		
 		return true;
 
 	}
 
-	function OpenDoc_ChartFindCol(&$cols, &$el, $att, $s_idx) {
-		$x = $el->GetAttLazy($att);
-		if ($x===false) return $this->RaiseError("(ChartFindCol) : unable to find cell references for series number #".($idx+1)." in the chart ".$this->_ChartCaption.".");
-		$c = $this->Misc_ColNum($x, true);
-		if ($s_idx!==false) $cols[$c] = $s_idx;
-		return $c;
-	}
+	/**
+	 * Return the column number of the first cell in a range.
+	 *
+	 * @param string  $RangeRef    The reference of a range. Like "local-table.$B$2:.$B$5"
+	 * @param string  $LocTblName  The local table name. The function will return false if the range is prefixed with the wrong table name.
+	 * @param integer $def_col_idx The index return if the range is not referenced to the local table name.
+	 *
+	 * @return integer
+	 */
+	function OpenDoc_FirstColIdx($RangeRef, $LocTblName, $def_col_idx) {
 
+		$p = strpos($RangeRef, '.');
+		if ($p !== false) {
+			if (substr($RangeRef, 0 , $p) !== $LocTblName) {
+				// It is not the expected table
+				return $def_col_idx;
+			}
+			$RangeRef = substr($RangeRef, $p); // delete the table name wich is in prefix
+		}
+		$RangeRef = str_replace( array('.','$'), '', $RangeRef);
+		$RangeRef = explode(':', $RangeRef);
+
+		$col_num = $this->Sheet_ColNum($RangeRef[0]);
+		if ($col_num === false) return $this->RaiseError('(FirstColIdx) Reference of cell \'' . $RangeRef[0] . '\' cannot be recognized.');
+		
+		return $col_num - 1;
+
+	}
+	
 	function OpenDoc_ChartDelSeries(&$Txt, &$series) {
 
-		$att = 'chart:label-cell-address="'.$series['ref'].'"';
+		// TODO : we should update the category range in <chart:categories> but LibreOffice seems to not care about it.
+		// Note: only the declaration of the series is deleted, not the data.
+		$att = 'chart:label-cell-address="'.$series['label_ref'].'"';
 		$elSeries = clsTbsXmlLoc::FindElementHavingAtt($Txt, $att, 0);
 
 		if ($elSeries!==false) $elSeries->ReplaceSrc('');
 
 	}
 
+	/**
+	 * Delete one, sveral or all categories in the chart.
+	 * @param string       $ChartRef       The chart reference.
+	 * @param string|array $del_categories An array of categories to delete, on the name of a category, all the keywork '*' that means all categories.
+	 * @param boolean      $no_err         Indicate if an error is return when a searched category is not found.
+	 * @return boolean Return true if all the searched categories are deleted.
+	 */
+	function OpenDoc_ChartDelCategories($ChartRef, $del_categories, $no_err) {
+
+		$Txt = false;
+		$chart = $this->OpenDoc_ChartFind($ChartRef, $Txt, 'ChartChangeSeries');
+		if ($chart === false) return;
+
+		// Colmun that hold the category name
+		$col_idx = $chart['series_cat_col'];
+		
+		// Prepare info for the search
+		$del_all = false;
+		if (is_string($del_categories)) {
+			if ($del_categories == '*') {
+				$del_all = true;
+				$del_categories = array();
+			} else {
+				$del_categories = array($del_categories);
+			}
+		}
+		$remain_cat = array_flip($del_categories);
+		
+		// Scann all rows for changing cells
+		$elData = clsTbsXmlLoc::FindElement($Txt, 'table:table-rows', 0);
+		$p_row = 0;
+		$del_nb = 0;
+		while ( ($elRow=clsTbsXmlLoc::FindElement($elData, 'table:table-row', $p_row)) !== false ) {
+			$p_cell = 0;
+			for ($i = 0; $i <= $col_idx; $i++) {
+				if ($elCell = clsTbsXmlLoc::FindElement($elRow, 'table:table-cell', $p_cell)) {
+					if ($i == $col_idx) {
+						// Category
+						if ($elP = clsTbsXmlLoc::FindElement($elCell, 'text:p', 0)) {
+							$category = $elP->GetInnerSrc();
+							if ($del_all || isset($remain_cat[$category])) {
+								$elRow->Delete();
+								$elRow->UpdateParent(true);
+								$del_nb++;
+								unset($remain_cat[$category]);
+								// optimisation
+								if ( (!$del_all) && (count($remain_cat) == 0) ) {
+									return true;
+								}
+							}
+						}
+					}
+					$p_cell = $elCell->PosEnd;
+				} else {
+					$i = $col_idx + 1; // ends the loops
+				}
+			}
+			$p_row = $elRow->PosEnd;
+		}		
+
+		// Save the file if modified
+		if ($del_nb > 0) {
+			$this->TbsStorePut($chart['file_idx'], $Txt);
+		}
+		
+		// Result of the function
+		if ( $del_all || (count($remain_cat) == 0) ) {
+			// All searched categories are deleted
+			return true;
+		} else {
+			if ($no_err) {
+				return false;
+			} else {	
+				return $this->RaiseError("(ChartDelCategory) : unable to find categories '" . implode(', ', array_keys($remain_cat)) . "' in the chart ".$this->_ChartCaption.".");
+			}
+		}
+		
+	}
+	
 	function OpenDoc_ChartRenameSeries(&$Txt, &$series, $NewName) {
 
-		$NewName = htmlspecialchars($NewName);
-		$col_name = $series['col_name'];
+		$NewName = htmlspecialchars($NewName, ENT_NOQUOTES); // ENT_NOQUOTES because target is an element's content
+		$col_idx = $series['name_col'];
 
 		$el = clsTbsXmlLoc::FindStartTag($Txt, 'table:table-header-rows', 0);
 		$el = clsTbsXmlLoc::FindStartTag($Txt, 'table:table-row', $el->PosEnd);
-		for ($i=1; $i<$col_name; $i++) $el = clsTbsXmlLoc::FindStartTag($Txt, 'table:table-cell', $el->PosEnd);
+		for ($i = 0; $i < $col_idx; $i++) {
+			$el = clsTbsXmlLoc::FindStartTag($Txt, 'table:table-cell', $el->PosEnd);
+		}
 		$elCell = clsTbsXmlLoc::FindElement($Txt, 'table:table-cell', $el->PosEnd);
 
 		$elP = clsTbsXmlLoc::FindElement($elCell, 'text:p', 0);
@@ -5388,6 +7025,59 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 
 	}
 
+	/**
+	 * Returne the local reference for a colmun.
+	 */
+	function OpenDoc_ChartLocalColRef($chart, $col, $row1, $row2 = false) {
+		$ref = $chart['tbl_name'] . '.' . $this->Sheet_CellRef($col, $row1, '$');
+		if ($row2 !== false) {
+			$ref .= ':' . $this->Sheet_CellRef($col, $row2, '$');
+		}
+		return $ref;
+	}
+	
+	/**
+	 * Unlink a series, so that is becomes attached to the local table.
+	 * Example : "local-table.$B$2:.$B$5"
+	 */
+	function OpenDoc_ChartUnlinkSeries(&$Txt, &$chart, &$series) {
+
+		$att = 'chart:label-cell-address="' . $series['label_ref'] .'"';
+		$elSeries = clsTbsXmlLoc::FindElementHavingAtt($Txt, $att, 0);
+
+		if ($elSeries) {
+			
+			// Replace the label adress
+			$col_num = $series['name_col'] + 1;
+			$ref = $this->OpenDoc_ChartLocalColRef($chart, $col_num, 1);
+			$elSeries->ReplaceAtt('chart:label-cell-address', $ref);
+			
+			// Replace the value adress
+			$col_num = $series['val_col'] + 1;
+			$ref = $this->OpenDoc_ChartLocalColRef($chart, $col_num, 2, 2);
+			$elSeries->ReplaceAtt('chart:values-cell-range-address', $ref);
+			
+			// Replace other adresses
+			$p = 0;
+			foreach ($series['used_cols'] as $idx => $col_idx) {
+				if ($col_idx != $series['val_col']) {
+					$el = clsTbsXmlLoc::FindStartTag($elSeries, 'chart:domain', $p);
+					if ($el) {
+						$col_num = $col_idx + 1;
+						$ref = $this->OpenDoc_ChartLocalColRef($chart, $col_num, 2, 2);
+						$el->ReplaceAtt('table:cell-range-address', $ref);
+						$el->UpdateParent();
+						$p = $el->PosEnd;
+					}
+				}
+			}
+			
+		}
+		
+		$series['local'] = false;
+	
+	}
+	
 	/**
 	 * Return information and data about all series in the chart.
 	 */
@@ -5425,11 +7115,11 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 		
 		// Format series information
 		$series = array();
-		$cat_idx = $chart['col_cat'] - 1;
+		$cat_idx = $chart['series_cat_col'];
 		foreach ($chart['series'] as $idx => $info) {
 			$cat = array();
 			$val = array();
-			$col_idx = $info['cols'][0] - 1;
+			$col_idx = $info['val_col'];
 			foreach ($table as $row) {
 				$val[] = $row[$col_idx]['val'];
 				$cat[] = $row[$cat_idx]['txt'];
@@ -5470,7 +7160,7 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 		$ChartLst = $this->OpenDocCharts;
 
 		echo $nl;
-		echo $nl."Charts found in the contents:";
+		echo $nl."Charts found in the contents: (use command OPENTBS_CHART_INFO to get series's names and data)";
 		echo $nl."-----------------------------";
 		foreach ($ChartLst as $i=>$c) {
 			$title = ($c['title']===false) ? '(not found)' : var_export($c['title'], true);
@@ -5481,11 +7171,12 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 	}
 
 	/**
-	 * Fixes the problem of ODS files built with LibreOffice >= 4 and merged with OpenTBS and opened with Ms Excel.
-	 * The virtual number of row can exeed the maximum supported, then Excem raises an error when opening the file.
+	 * Delete useless reapeated rows, cell and columns.
+	 * This operation fixes the problem of ODS files built with LibreOffice >= 4 and merged with OpenTBS and opened with Ms Excel.
+	 * The virtual number of row can exceed the maximum supported, then Excel raises an error when opening the file.
 	 * LibreOffice does not.
 	 */
-	function OpenDoc_MsExcelCompatibility(&$Txt) {
+	function OpenDoc_DeleteUselessRepeatedElements(&$Txt) {
 		
 		$el_tbl  = 'table:table';
 		$el_col  = 'table:table-column'; // Column definition
@@ -5521,23 +7212,26 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 				
 				if ( ($xml->Name == $el_col) && ($xml->SelfClosing) ) {
 					if ( ($next_name == $el_row) || ($next_name == '/' . $el_tbl) ) {
+						// It's the last column definition of the sheet, and it is self-closing and repeated
 						$delete = true;
 					}
 				} elseif ( ($xml->Name == $el_cell) && ($xml->SelfClosing) ) {
 					if ( $next_name == '/' . $el_row ) {
+						// It's the last cell of a row, and it is self-closing and repeated
 						$delete = true;
 					}
 				} elseif ($xml->Name == $el_row) {
 					if ( $next_name == '/' . $el_tbl ) {
 						$inner_src = '' . $xml->GetInnerSrc();
 						if (strpos($inner_src, '<') === false) {
+							// It's the last row of a sheet, and it is empty and repeated
 							$delete = true;
 						}
 					}
 				}
 				
 				if ($delete) {
-					//echo " * SUPPRIME " . $xml->Name . " : " . $xml->GetSrc() . "\n";
+					//echo " * DELETE " . $xml->Name . " : " . $xml->GetSrc() . "\n";
 					$p = $xml->PosBeg;
 					$xml->Delete();
 				}
@@ -5547,6 +7241,36 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
 		}
 		
 	}
+	
+	/**
+	 * Apply a, OpenTBS trick in order to manage covered cells as if there are normal cells.
+	 *
+	 * @param string|object $src A string or an clsTbsXmlLoc object
+	 * @param boolean       $do  True to apply, false to unapply.
+	 */
+	function OpenDoc_CoveredCells_Replace(&$src, $do) {
+	
+		$is_loc = is_object($src);
+		if ($is_loc) {
+			$txt = $src->GetSrc();
+		} else {
+			$txt =& $src;
+		}
+		
+		$opendoc   = '<table:covered-table-cell';
+		$tbs_trick = '<table:table-cell covered="1"';
+		if ($do) {
+			$txt = str_replace($opendoc, $tbs_trick, $txt);
+		} else {
+			$txt = str_replace($tbs_trick, $opendoc, $txt);
+		}
+		
+		if ($is_loc) {
+			$src->ReplaceSrc($txt);
+		}
+	
+	}
+	
 	
 }
 
@@ -5558,32 +7282,184 @@ If they are blank spaces, line beaks, or other unexpected characters, then you h
  */
 class clsTbsXmlLoc {
 
-	var $PosBeg;
-	var $PosEnd;
-	var $SelfClosing;
-	var $Txt;
-	var $Name = ''; 
+	public $PosBeg;
+	public $PosEnd; // can the end of the open tag, or end of the close tag.
+	public $SelfClosing; // null|false|true, null means unknown.
+	public $Txt;
+	public $Name = ''; 
+	public $Exists; 
 
-	var $pST_PosEnd = false; // start tag: position of the end
-	var $pST_Src = false;    // start tag: source
-	var $pET_PosBeg = false; // end tag: position of the beginning
+	public $pST_PosEnd = false; // position of the end of the start tag
+	public $pST_Src = false;    // cached source of the start tag, false if not cached
+	public $pET_PosBeg = false; // position of the begining of the end tag
 
-	var $Parent = false; // parent object
+	public $Parent = false; // parent object
 
 	// For relative mode
-	var $rel_Txt = false;
-	var $rel_PosBeg = false;
-	var $rel_Len = false;
+	public $rel_Txt = false;
+	public $rel_PosBeg = false;
+	public $rel_Len = false;
+
+	/**
+	 * Search a start tag of an element in the TXT contents, and return an object if it is found.
+	 * Instead of a TXT content, it can be an object of the class. Thus, the object is linked to a copy
+	 *  of the source of the parent element. The parent element can receive the changes of the object using method UpdateParent().
+	 */
+	static function FindStartTag(&$TxtOrObj, $Tag, $PosBeg, $Forward=true) {
+
+		if (is_object($TxtOrObj)) {
+			$TxtOrObj->FindEndTag();
+			$Txt = $TxtOrObj->GetSrc();
+			if ($Txt===false) return false;
+			$Parent = &$TxtOrObj;
+		} else {
+			$Txt = &$TxtOrObj;
+			$Parent = false;
+		}
+
+		$PosBeg = clsTinyButStrong::f_Xml_FindTagStart($Txt, $Tag, true , $PosBeg, $Forward, true);
+		if ($PosBeg===false) return false;
+
+		return new clsTbsXmlLoc($Txt, $Tag, $PosBeg, null, $Parent);
+
+	}
+
+	/**
+	 * Search a start tag by the prefix of the element.
+	 * @param  string       $TagPrefix The prefix of the tag. Empty string accepeted.
+	 * @return false|object The found object will have its real tag name.
+	 */
+	static function FindStartTagByPrefix(&$Txt, $TagPrefix, $PosBeg, $Forward=true) {
+
+		$x = '<'.$TagPrefix;
+		$xl = strlen($x);
+
+		if ($Forward) {
+			$PosBeg = strpos($Txt, $x, $PosBeg);
+		} else {
+			$PosBeg = strrpos(substr($Txt, 0, $PosBeg+2), $x);
+		}
+		if ($PosBeg===false) return false;
+
+		// Read the actual tag name
+		$Tag = $TagPrefix;
+		$p = $PosBeg + $xl;
+		do {
+			$z = substr($Txt,$p,1);
+			if ( ($z!==' ') && ($z!=="\r") && ($z!=="\n") && ($z!=='>') && ($z!=='/') ) {
+				$Tag .= $z;
+				$p++;
+			} else {
+				$p = false;
+			}
+		} while ($p!==false);
+
+		return new clsTbsXmlLoc($Txt, $Tag, $PosBeg);
+
+	}
+
+	// Search an element in the TXT contents, and return an object if it's found.
+	static function FindElement(&$TxtOrObj, $Tag, $PosBeg, $Forward=true) {
+
+		$XmlLoc = clsTbsXmlLoc::FindStartTag($TxtOrObj, $Tag, $PosBeg, $Forward);
+		if ($XmlLoc===false) return false;
+
+		$XmlLoc->FindEndTag();
+		return $XmlLoc;
+
+	}
+
+	/**
+	 * Search a start tag in the TXT contents which has the asked attribute.
+	 * Note that the element found has an unknown name until FindEndTag() is called.
+	 * The function does check if the attribute is inside an XML element.
+	 * @param  string  &$Txt    The source to search into.
+	 * @param  string  $Att     The attribute name of full definition to search. Example: 'visible' or 'visible="1"'
+	 * @param  integer $PosBeg  The offset position of the search.
+	 * @param  boolean $Forward (optional) Indicate the direction of the search.
+	 * @return false|object
+	 */
+	static function FindStartTagHavingAtt(&$Txt, $Att, $PosBeg, $Forward=true) {
+
+		$p = $PosBeg - (($Forward) ? 1 : -1);
+		$x = (strpos($Att, '=')===false) ? (' '.$Att.'="') : (' '.$Att); // get the item more precise if not yet done
+		$search = true;
+
+		do {
+			if ($Forward) {
+				$p = strpos($Txt, $x, $p+1);
+			} else {
+				$p = strrpos(substr($Txt, 0, $p+1), $x);
+			}
+			if ($p===false) return false;
+			// Seearch for the bound of an element.
+			do {
+			  $p = $p - 1;
+			  if ($p<0) return false;
+			  $z = $Txt[$p];
+			} while ( ($z!=='<') && ($z!=='>') );
+			// If the bound is an opening tag, then the attribute is inside, otherwise we search the next item.
+			if ($z==='<') $search = false;
+		} while ($search);
+
+		return new clsTbsXmlLoc($Txt, '', $p);
+
+	}
+
+	/**
+	 * Search an element in the TXT contents which has the asked attribute, and return an object if it is found.
+	 * @param  string  &$Txt    The source to search into.
+	 * @param  string  $Att     The attribute name of full definition to search. Example: 'visible' or 'visible="1"'
+	 * @param  integer $PosBeg  The offset position of the search.
+	 * @param  boolean $Forward (optional) Indicate the direction of the search.
+	 * @return false|object
+	 */
+	static function FindElementHavingAtt(&$Txt, $Att, $PosBeg, $Forward=true) {
+
+		$XmlLoc = clsTbsXmlLoc::FindStartTagHavingAtt($Txt, $Att, $PosBeg, $Forward);
+		if ($XmlLoc===false) return false;
+
+		$XmlLoc->FindEndTag();
+
+		return $XmlLoc;
+
+	}
+	
+	static function CreatePhantomElement(&$TxtOrObj, $PosBeg) {
+		
+		if (is_object($TxtOrObj)) {
+			$TxtOrObj->FindEndTag();
+			$Txt = $TxtOrObj->GetSrc();
+			if ($Txt===false) return false;
+			$Parent = &$TxtOrObj;
+		} else {
+			$Txt = &$TxtOrObj;
+			$Parent = false;
+		}
+		
+		$Name = '';
+		$SelfClosing = null;
+		$Exists = false;
+
+		$XmlLoc = new clsTbsXmlLoc($Txt, $Name, $PosBeg, $SelfClosing, $Parent, $Exists);
+			
+		return $XmlLoc;
+		
+	}
 	
 	// Create an instance with the given parameters
-	function __construct(&$Txt, $Name, $PosBeg, $SelfClosing = null, $Parent=false) {
-	
-		$this->PosEnd = strpos($Txt, '>', $PosBeg);
-		if ($this->PosEnd===false) $this->PosEnd = strlen($Txt)-1; // should no happen but avoid errors
+	function __construct(&$Txt, $Name, $PosBeg, $SelfClosing = null, $Parent = false, $Exists = true) {
 	
 		$this->Txt = &$Txt;
 		$this->Name = $Name;
 		$this->PosBeg = $PosBeg;
+		$this->Exists = $Exists;
+		if ($Exists) {
+			$this->PosEnd = strpos($Txt, '>', $PosBeg);
+			if ($this->PosEnd===false) $this->PosEnd = strlen($Txt)-1; // should no happen but avoid errors
+		} else {
+			$this->PosEnd = $PosBeg - 1;
+		}
 		$this->pST_PosEnd = $this->PosEnd;
 		$this->SelfClosing = $SelfClosing;
 		$this->Parent = $Parent;
@@ -5619,7 +7495,20 @@ class clsTbsXmlLoc {
 		$this->pST_PosEnd += $Diff;
 		if ($this->pET_PosBeg!==false) $this->pET_PosBeg += $Diff;
 	}
-
+	
+	/**
+	 * Convert a self-closing entity to a start+end entity if needed.
+	 * @param string $inner The inner content to insert. 
+	 */
+	function _ConvertToCouple($inner) {
+		$end = '>' . $inner . '</' . $this->FindName() . '>';
+		$this->Txt = substr_replace($this->Txt, $end, $this->PosEnd - 1, 2);
+		$this->SelfClosing = false;
+		$this->pST_PosEnd = $this->PosEnd - 1;
+		$this->pET_PosBeg = $this->pST_PosEnd + strlen($inner) + 1;
+		$this->PosEnd = $this->pST_PosEnd + strlen($end) - 1;		
+	}
+	
 	// Return true is the ending position is a self-closing.
 	function _SelfClosing($PosEnd) {
 		return (substr($this->Txt, $PosEnd-1, 1)=='/');
@@ -5648,13 +7537,23 @@ class clsTbsXmlLoc {
 			$this->pST_PosBeg = false;
 			$this->pST_PosEnd = false;
 			$this->pET_PosBeg = false;
+			$this->Exists = false;
 		} else {
 			$this->pST_PosEnd += $diff; // CAUTION: may be wrong if attributes has changed
 			if ($this->pET_PosBeg!==false) $this->pET_PosBeg += $diff; // CAUTION: right only if the tag name is the same
+			$this->Exists = true;
 		}
 	}
 
-	// Return the start of the inner content, or false if it's a self-closing tag 
+	/**
+	 * Return the position for appending at the end of the inner contents.
+	 * Return false if SelfClosing.
+	 */
+	function GetInnerAppendPos() {
+		return $this->pET_PosBeg;
+	}
+
+	// Return the start of the inner content.
 	// Return false if SelfClosing.
 	function GetInnerStart() {
 		return ($this->pST_PosEnd===false) ? false : $this->pST_PosEnd + 1;
@@ -5667,7 +7566,7 @@ class clsTbsXmlLoc {
 		return ($this->pET_PosBeg===false) ? false : $this->pET_PosBeg - $this->pST_PosEnd - 1;
 	}
 
-	// Return the length of the inner content, or false if it's a self-closing tag 
+	// Return the contents of the inner content, or false if it's a self-closing tag 
 	// Assume FindEndTag() is previously called.
 	// Return false if SelfClosing.
 	function GetInnerSrc() {
@@ -5679,12 +7578,7 @@ class clsTbsXmlLoc {
 	// Convert a self-closing entity to a start+end entity if needed.
 	function ReplaceInnerSrc($new) {
 		if ($this->SelfClosing) {
-			$end = '>' . $new . '</' . $this->FindName() . '>';
-			$this->Txt = substr_replace($this->Txt, $end, $this->PosEnd - 1, 2);
-			$this->SelfClosing = false;
-			$this->pST_PosEnd = $this->PosEnd - 1;
-			$this->pET_PosBeg = $this->pST_PosEnd + strlen($new) + 1;
-			$this->PosEnd = $this->pST_PosEnd + strlen($end) - 1;
+			$this->_ConvertToCouple($new);
 		} else {
 			$len = $this->GetInnerLen();
 			if ($len===false) return false;
@@ -5694,6 +7588,19 @@ class clsTbsXmlLoc {
 		}
 	}
 
+	/**
+	 * Append a contents at the end of the inner source.
+	 */
+	function AppendInnerSrc($add) {
+		if ($this->SelfClosing) {
+			$this->_ConvertToCouple($add);
+		} else {
+			$this->Txt = substr_replace($this->Txt, $add, $this->pET_PosBeg, 0);
+			$this->PosEnd += strlen($add);
+			$this->pET_PosBeg += strlen($add);
+		}
+	}
+	
 	// Update the parent object, if any.
 	function UpdateParent($Cascading=false) {
 		if ($this->Parent) {
@@ -5701,7 +7608,7 @@ class clsTbsXmlLoc {
 			if ($Cascading) $this->Parent->UpdateParent($Cascading);
 		}
 	}
-
+	
 	// Get an attribute's value. Or false if the attribute is not found.
 	// It's a lazy way because the attribute is searched with the patern {attribute="value" }
 	function GetAttLazy($Att) {
@@ -5760,7 +7667,7 @@ class clsTbsXmlLoc {
 
 	// Find the name of the element
 	function FindName() {
-		if ($this->Name==='') {
+		if ( ($this->Name==='') && $this->Exists ) {
 			$p = $this->PosBeg;
 			do {
 				$p++;
@@ -5798,7 +7705,7 @@ class clsTbsXmlLoc {
 		return true;
 	}
 
-	// Swith the locator to a realtive one that has no XML contents before and no XML contents after.
+	// Swith the locator to a relative one that has no XML contents before and no XML contents after.
 	// Useful to save time in search and replace.
 	function switchToRelative() {
 		$this->FindEndTag();
@@ -5813,7 +7720,7 @@ class clsTbsXmlLoc {
 		$this->_ApplyDiffToAll(-$this->PosBeg);
 	}
 
-	// To use after switchToRelative(): save modificatin to the normal contents and update positions.
+	// To use after switchToRelative(): save modification to the normal contents and update positions.
 	function switchToNormal() {
 		// Save info
 		$src = $this->GetSrc();
@@ -5824,110 +7731,6 @@ class clsTbsXmlLoc {
 		$this->_ApplyDiffToAll(+$this->rel_PosBeg);
 		$this->rel_PosBeg = false;
 		$this->rel_Len = false;
-	}
-	
-	/**
-	 * Search a start tag of an element in the TXT contents, and return an object if it is found.
-	 * Instead of a TXT content, it can be an object of the class. Thus, the object is linked to a copy
-	 *  of the source of the parent element. The parent element can receive the changes of the object using method UpdateParent().
-	 */
-	static function FindStartTag(&$TxtOrObj, $Tag, $PosBeg, $Forward=true) {
-
-		if (is_object($TxtOrObj)) {
-			$TxtOrObj->FindEndTag();
-			$Txt = $TxtOrObj->GetSrc();
-			if ($Txt===false) return false;
-			$Parent = &$TxtOrObj;
-		} else {
-			$Txt = &$TxtOrObj;
-			$Parent = false;
-		}
-
-		$PosBeg = clsTinyButStrong::f_Xml_FindTagStart($Txt, $Tag, true , $PosBeg, $Forward, true);
-		if ($PosBeg===false) return false;
-
-		return new clsTbsXmlLoc($Txt, $Tag, $PosBeg, null, $Parent);
-
-	}
-
-	// Search a start tag by the prefix of the element
-	static function FindStartTagByPrefix(&$Txt, $TagPrefix, $PosBeg, $Forward=true) {
-
-		$x = '<'.$TagPrefix;
-		$xl = strlen($x);
-
-		if ($Forward) {
-			$PosBeg = strpos($Txt, $x, $PosBeg);
-		} else {
-			$PosBeg = strrpos(substr($Txt, 0, $PosBeg+2), $x);
-		}
-		if ($PosBeg===false) return false;
-
-		// Read the actual tag name
-		$Tag = $TagPrefix;
-		$p = $PosBeg + $xl;
-		do {
-			$z = substr($Txt,$p,1);
-			if ( ($z!==' ') && ($z!=="\r") && ($z!=="\n") && ($z!=='>') && ($z!=='/') ) {
-				$Tag .= $z;
-				$p++;
-			} else {
-				$p = false;
-			}
-		} while ($p!==false);
-
-		return new clsTbsXmlLoc($Txt, $Tag, $PosBeg);
-
-	}
-
-	// Search an element in the TXT contents, and return an object if it's found.
-	static function FindElement(&$TxtOrObj, $Tag, $PosBeg, $Forward=true) {
-
-		$XmlLoc = clsTbsXmlLoc::FindStartTag($TxtOrObj, $Tag, $PosBeg, $Forward);
-		if ($XmlLoc===false) return false;
-
-		$XmlLoc->FindEndTag();
-		return $XmlLoc;
-
-	}
-
-	// Search an element in the TXT contents which has the asked attribute, and return an object if it is found.
-	// Note that the element found has an unknown name until FindEndTag() is called.
-	// The given attribute can be with or without a specific value. Example: 'visible' or 'visible="1"'
-	static function FindStartTagHavingAtt(&$Txt, $Att, $PosBeg, $Forward=true) {
-
-		$p = $PosBeg - (($Forward) ? 1 : -1);
-		$x = (strpos($Att, '=')===false) ? (' '.$Att.'="') : (' '.$Att); // get the item more precise if not yet done
-		$search = true;
-
-		do {
-			if ($Forward) {
-				$p = strpos($Txt, $x, $p+1);
-			} else {
-				$p = strrpos(substr($Txt, 0, $p+1), $x);
-			}
-			if ($p===false) return false;
-			do {
-			  $p = $p - 1;
-			  if ($p<0) return false;
-			  $z = $Txt[$p];
-			} while ( ($z!=='<') && ($z!=='>') );
-			if ($z==='<') $search = false;
-		} while ($search);
-
-		return new clsTbsXmlLoc($Txt, '', $p);
-
-	}
-
-	static function FindElementHavingAtt(&$Txt, $Att, $PosBeg, $Forward=true) {
-
-		$XmlLoc = clsTbsXmlLoc::FindStartTagHavingAtt($Txt, $Att, $PosBeg, $Forward);
-		if ($XmlLoc===false) return false;
-
-		$XmlLoc->FindEndTag();
-
-		return $XmlLoc;
-
 	}
 
 }
@@ -5977,7 +7780,12 @@ class clsTbsZip {
 		$this->ArchIsNew = false;
 		$this->ArchIsStream = (is_resource($ArchFile) && (get_resource_type($ArchFile)=='stream'));
 		if ($this->ArchIsStream) {
-			$this->ArchFile = 'from_stream.zip';
+            $info = stream_get_meta_data($ArchFile);
+            if (isset($info['uri'])) {
+                $this->ArchFile = $info['uri'];
+            } else {
+                $this->ArchFile = 'from_stream.zip';
+            }
 			$this->ArchHnd = $ArchFile;
 		} else {
 			// open the file
@@ -6514,8 +8322,8 @@ class clsTbsZip {
 		}
 		$this->OutputFromString($b2);
 		$ArchPos += $old_cd_len;
- 		$DeltaCdLen =  $DeltaCdLen + strlen($b2) - $old_cd_len;
- 
+		$DeltaCdLen =  $DeltaCdLen + strlen($b2) - $old_cd_len;
+
 		// Output until "end of central directory record"
 		if ($this->ArchHnd!==false) $this->OutputFromArch($ArchPos, $this->CdEndPos); // ArchHnd is false if CreateNew() has been called
 
@@ -6532,7 +8340,7 @@ class clsTbsZip {
 		// Output "end of central directory record"
 		$b2 = $this->CdInfo['bin'];
 		$DelNbr = count($DelLst);
-		if ( ($AddNbr>0) or ($DelNbr>0) ) {
+		if ( ($AddNbr>0) || ($DelNbr>0) ) {
 			// total number of entries in the central directory on this disk
 			$n = $this->_GetDec($b2, 8, 2);
 			$this->_PutDec($b2, $n + $AddNbr - $DelNbr,  8, 2);

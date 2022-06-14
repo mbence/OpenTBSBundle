@@ -23,9 +23,9 @@ What is special to OpenTBS:
 * Works with both PHP 4 and PHP 5.
 
 ## Versions included
-TinyButStrong - 3.10.1
+TinyButStrong - 3.12.2
 
-OpenTBS - 1.9.7
+OpenTBS - 1.10.2
 
 ## Requirements
 
