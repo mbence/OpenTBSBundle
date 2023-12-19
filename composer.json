@@ -7,6 +7,12 @@
     "license": "MIT",
     "authors": [
         {
+            "name": "Eduardo Valenzuela",
+            "email": "eduardo@davidzwirner.com",
+            "homepage": "http://davidzwirner.com",
+            "role": "Developer"
+        },
+        {
             "name": "Bence Meszaros",
             "email": "bence@bencemeszaros.com",
             "homepage": "http://bencemeszaros.com",
