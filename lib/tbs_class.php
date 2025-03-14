@@ -3,8 +3,8 @@
  *
  * TinyButStrong - Template Engine for Pro and Beginners
  *
- * @version 3.15.0 for PHP 5, 7, 8
- * @date    2023-05-15
+ * @version 3.15.2 for PHP 5, 7, 8
+ * @date    2024-05-08
  * @link    http://www.tinybutstrong.com Web site
  * @author  http://www.tinybutstrong.com/onlyyou.html
  * @license http://opensource.org/licenses/LGPL-3.0 LGPL-3.0
@@ -61,7 +61,7 @@ class clsTbsLocator {
 	public $PrmIfVar;
 	public $PrmElseVar;
 
-	// autre
+	// other
 	public $ConvEsc;
 	public $ConvWS;
 	public $ConvJS;
@@ -73,8 +73,12 @@ class clsTbsLocator {
 	
 	public $OpeUtf8;
 	public $OpeAct;
-	public $OpePrm;	
-	public $OpeArg;	
+	public $OpePrm;
+	public $OpeArg;
+    
+    public $OpeMOK;
+    public $OpeMKO;
+    public $MSave;
 
 	// Sub-template
 	public $SaveSrc;
@@ -117,6 +121,7 @@ class clsTbsLocator {
 	public $CheckPrev;
 	public $WhenFound;
 	public $WhenDefault;
+    public $WhenDefaultBeforeNS;
 	public $SectionNbr;
 	public $SectionLst;
 	public $PosDefBeg;
@@ -158,6 +163,7 @@ public $OnDataOk = false;
 public $OnDataPrm = false;
 public $OnDataPrmDone = array();
 public $OnDataPi = false;
+public $OnDataPiRef = false;
 
 // Info relative to the current record :
 public $CurrRec = false; // Used by ByPage plugin
@@ -808,7 +814,8 @@ private $_UserFctLst;
 private $_Subscript;
 public  $CurrPrm;
 
-private $_piOnData;
+// Plug-in events
+public  $_piOnData; // must be public because used by clsTbsDataSource, otherwise the plugi is never
 private $_piBeforeLoadTemplate;
 private $_piAfterLoadTemplate;
 private $_piOnMergeField;
@@ -1754,6 +1761,7 @@ function meth_Locator_Replace(&$Txt,&$Loc,&$Value,$SubStart) {
 				} elseif ($ope==='lower') { $Loc->OpeAct[$i] = 16;
 				} elseif ($ope==='upper1') { $Loc->OpeAct[$i] = 17;
 				} elseif ($ope==='upperw') { $Loc->OpeAct[$i] = 18;
+				} elseif ($ope==='debug_val') { $Loc->OpeAct[$i] = 19;
 				} else {
 					$x = substr($ope,0,4);
 					if ($x==='max:') {
@@ -1870,6 +1878,7 @@ function meth_Locator_Replace(&$Txt,&$Loc,&$Value,$SubStart) {
 			case 16: $CurrVal = ($Loc->OpeUtf8) ? mb_convert_case($CurrVal, MB_CASE_LOWER, 'UTF-8') : strtolower($CurrVal); break;
 			case 17: $CurrVal = ucfirst($CurrVal); break;
 			case 18: $CurrVal = ($Loc->OpeUtf8) ? mb_convert_case($CurrVal, MB_CASE_TITLE, 'UTF-8') : ucwords(strtolower($CurrVal)); break;
+			case 19: $CurrVal = '(' . gettype($CurrVal) . ') ' . var_export($CurrVal, true); break;
 			}
 		}
 	}
@@ -4423,9 +4432,9 @@ static function f_Misc_ConvSpe(&$Loc) {
 
 /**
  * Return the information if parsing a form which can be either a property of a function.
- * @param  string $Str The form.
- * @return array  Information about the form.
- *                name:   the name of the function of the property
+ * @param  string $Str The form.              Example : 'my_func(aaa,bbb)'
+ * @return array  Information about the form. Example : array('name' => 'my_func', 'as_fct' => true, 'args' => array('aaa', 'bbb'),)
+ *                name:   the name of the function of the property.
  *                as_fct: true if the form is as a function
  *                args:   arguments of the function, or empty array if it's a property
  */
